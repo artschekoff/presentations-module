@@ -8,6 +8,8 @@ from bson import ObjectId
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection
 
+from presentations.core.presentation_document import PresentationDocument
+
 
 class MongoStorage:
     """Thin, fast wrapper around a MongoDB collection for presentation metadata."""
@@ -44,26 +46,13 @@ class MongoStorage:
         )
         self._collection.create_index([("created_at", DESCENDING)], background=True)
 
-    def save_task(
+    def save_presentation(
         self,
         *,
-        topic: str,
-        language: str,
-        slides_amount: int,
-        audience: str,
-        author: str | None,
+        document: PresentationDocument,
         extra: dict[str, Any] | None = None,
     ) -> ObjectId:
-        payload: dict[str, Any] = {
-            "topic": topic,
-            "language": language,
-            "slides_amount": slides_amount,
-            "audience": audience,
-            "author": author,
-            "status": "pending",
-            "files": list(),
-            "created_at": datetime.utcnow(),
-        }
+        payload = document.payload()
 
         if extra:
             payload.update(extra)
