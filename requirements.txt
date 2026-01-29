@@ -1,3 +1,3 @@
-playwright
-pymongo
-python-dotenv
+playwright==1.57.0
+pymongo==4.16.0
+python-dotenv==1.2.1
