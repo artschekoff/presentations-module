@@ -7,6 +7,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from playwright.async_api import Page, async_playwright
 
+from presentations.core.presentation_document import PresentationDocument
 from presentations.core.presentation_task import PresentationTask
 from presentations.database.db import MongoStorage
 from presentations.sources.sokratic_source import SokraticSource
@@ -99,13 +100,15 @@ def set_tasks() -> list[tuple[ObjectId, PresentationTask]]:
     for task in tasks:
         logger.info(f"Saving task for topic: {task.topic}")
 
-        objectId = db.save_task(
+        document = PresentationDocument(
             topic=task.topic,
             language=task.language,
             slides_amount=task.slides_amount,
             audience=task.audience,
             author=task.author,
         )
+
+        objectId = db.save_presentation(document=document)
 
         res.append((objectId, task))
 
