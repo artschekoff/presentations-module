@@ -2,6 +2,7 @@ import logging
 import os
 import random
 from typing import AsyncIterator
+import uuid
 
 from playwright.async_api import Playwright, Browser, Page
 
@@ -75,6 +76,9 @@ class SokraticSource(PresentationSource):
         self._ensure_assets_dir()
         self.logger.info("Start presentation generation")
 
+        # generate random uuid for this generation
+        generation_id = uuid.uuid4().hex
+
         steps = [
             "start",
             "form_saved",
@@ -82,6 +86,7 @@ class SokraticSource(PresentationSource):
             "generation_started",
             "downloaded_powerpoint",
             "downloaded_pdf",
+            "downloaded_text",
             "done",
         ]
         total_steps = len(steps)
@@ -186,10 +191,11 @@ class SokraticSource(PresentationSource):
         files = []
 
         self.logger.info("Download PowerPoint")
+
         files.append(
             await self._download_presentation(
                 doc_format="PowerPoint",
-                save_path=self.assets_dir,
+                save_path=os.path.join(self.assets_dir, generation_id),
             )
         )
 
@@ -199,14 +205,21 @@ class SokraticSource(PresentationSource):
         files.append(
             await self._download_presentation(
                 doc_format="PDF",
-                save_path=self.assets_dir,
+                save_path=os.path.join(self.assets_dir, generation_id),
             )
         )
 
         yield report_progress(5, "downloaded_pdf", files=list(files))
-        yield report_progress(6, "done", files=list(files))
 
-        return
+        files.append(
+            await self._download_text(
+                save_path=os.path.join(self.assets_dir, generation_id)
+            )
+        )
+
+        yield report_progress(6, "downloaded_text", files=list(files))
+
+        yield report_progress(7, "done", files=list(files))
 
     async def authenticate(self, login: str, password: str) -> None:
         self._check_init()
@@ -215,7 +228,7 @@ class SokraticSource(PresentationSource):
         self.logger.info("Open auth modal")
         await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
         screenshots_dir = self._ensure_screenshots_dir()
-        await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_1.png"))
+        # await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_1.png"))
 
         self.logger.debug("Locate email input")
         email_input = await page.query_selector("input[id='email']")
@@ -247,7 +260,45 @@ class SokraticSource(PresentationSource):
 
         self.logger.debug("Wait for auth success")
         await page.wait_for_url(f"{self.url}/ru?auth-success=true", timeout=10000)
-        await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_2.png"))
+        # await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_2.png"))
+
+    async def _download_text(self, save_path: str) -> str:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+
+        self.logger.debug("Downloading text")
+
+        page = self._get_page()
+
+        await page.locator("//button[normalize-space(.)='Текст выступления']").click(
+            timeout=self.generation_timeout
+        )
+
+        await page.locator("//button[normalize-space(.)='Сгенерировать текст']").click(
+            timeout=self.generation_timeout
+        )
+
+        await page.locator("//button[normalize-space(.)='Текст выступления']").click(
+            timeout=self.generation_timeout
+        )
+
+        markdown_content_path = "//div[contains(@class, 'markdown-body')]"
+
+        await page.locator(markdown_content_path).wait_for()
+
+        # get text content
+
+        text_content = await page.locator(markdown_content_path).inner_text()
+
+        if not text_content:
+            raise Exception("Failed to download text content")
+
+        file_path = os.path.join(save_path, "presentation_text.txt")
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(text_content)
+
+        return file_path
 
     async def _download_presentation(self, doc_format: str, save_path: str) -> str:
         if not os.path.exists(save_path):
