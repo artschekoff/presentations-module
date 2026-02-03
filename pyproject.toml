@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "presentations"
+name = "presentations_module"
 version = "0.1.0"
 dependencies = [
   "playwright==1.57.0",

@@ -8,7 +8,7 @@ from bson import ObjectId
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.collection import Collection
 
-from presentations.core.presentation_document import PresentationDocument
+from presentations_module.core.presentation_document import PresentationDocument
 
 
 class MongoStorage:
