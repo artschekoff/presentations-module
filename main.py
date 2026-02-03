@@ -7,10 +7,10 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from playwright.async_api import Page, async_playwright
 
-from presentations.core.presentation_document import PresentationDocument
-from presentations.core.presentation_task import PresentationTask
-from presentations.database.db import MongoStorage
-from presentations.sources.sokratic_source import SokraticSource
+from presentations_module.core.presentation_document import PresentationDocument
+from presentations_module.core.presentation_task import PresentationTask
+from presentations_module.database.db import MongoStorage
+from presentations_module.sources.sokratic_source import SokraticSource
 
 load_dotenv()
 
