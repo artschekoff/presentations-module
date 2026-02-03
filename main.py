@@ -15,37 +15,45 @@ from presentations_module.sources.sokratic_source import SokraticSource
 load_dotenv()
 
 logger = logging.getLogger("sokratic_source")
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logger.addHandler(console_handler)
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "2"))
 
 tasks = [
     PresentationTask(
         topic="Влияние климата на экосистемы",
         language="kz",
-        slides_amount=30,
+        slides_amount=10,
         audience="Средняя школа",
-        author="Кривощеков Артем",
+        author="Вася Пупкин",
     ),
-    PresentationTask(
-        topic="Влияние климата на домашних животных",
-        language="kz",
-        slides_amount=30,
-        audience="Средняя школа",
-        author="Кривощеков Артем",
-    ),
-    PresentationTask(
-        topic="Популяция китов",
-        language="kz",
-        slides_amount=30,
-        audience="Средняя школа",
-        author="Кривощеков Артем",
-    ),
-    PresentationTask(
-        topic="Проблемы концерна автоваз",
-        language="kz",
-        slides_amount=30,
-        audience="Средняя школа",
-        author="Кривощеков Артем",
-    ),
+    # PresentationTask(
+    #     topic="Влияние климата на домашних животных",
+    #     language="kz",
+    #     slides_amount=30,
+    #     audience="Средняя школа",
+    #     author="Кривощеков Артем",
+    # ),
+    # PresentationTask(
+    #     topic="Популяция китов",
+    #     language="kz",
+    #     slides_amount=30,
+    #     audience="Средняя школа",
+    #     author="Кривощеков Артем",
+    # ),
+    # PresentationTask(
+    #     topic="Проблемы концерна автоваз",
+    #     language="kz",
+    #     slides_amount=30,
+    #     audience="Средняя школа",
+    #     author="Кривощеков Артем",
+    # ),
 ]
 
 
@@ -61,7 +69,7 @@ async def run_presentation_task(
 
         source = SokraticSource(apw, logger=logger)
 
-        await source.init_async()
+        await source.init_async(headless=False)
 
         await source.authenticate(
             login=os.environ["SOKRATIC_USERNAME"],

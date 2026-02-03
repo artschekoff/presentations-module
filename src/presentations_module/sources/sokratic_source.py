@@ -39,9 +39,9 @@ class SokraticSource(PresentationSource):
         os.makedirs(screenshots_dir, exist_ok=True)
         return screenshots_dir
 
-    async def init_async(self):
+    async def init_async(self, headless: bool = False):
         if not self.is_init:
-            self.browser = await self.chrome.launch(headless=False)
+            self.browser = await self.chrome.launch(headless=headless)
             self.is_init = True
             self.page = await self.browser.new_page()
 
@@ -73,6 +73,7 @@ class SokraticSource(PresentationSource):
     ) -> AsyncIterator[ProgressPayload]:
         self._check_init()
         self._ensure_assets_dir()
+        self.logger.info("Start presentation generation")
 
         steps = [
             "start",
@@ -102,40 +103,51 @@ class SokraticSource(PresentationSource):
 
         page = self._get_page()
 
+        self.logger.debug("Click 'Create with AI' on landing page")
         await page.locator(
             '//button[contains(normalize-space(), "Создать с AI")]'
         ).click()
 
+        self.logger.debug("Wait for creation modal")
         await page.locator(
             '//h2[contains(normalize-space(), "Создать презентацию")]'
         ).wait_for(timeout=5000)
 
+        self.logger.debug("Fill topic")
         await page.locator('//textarea[@name="topic"]').type(topic)
+        self.logger.debug("Select slides amount: %s", slides_amount)
         await page.locator(
             '//form//select[.//option[contains(normalize-space(), "20")]]'
         ).select_option(str(slides_amount))
 
+        self.logger.debug("Select language: %s", language)
         await page.locator(
             '//form//select[.//option[contains(normalize-space(), "Русский")]]'
         ).select_option(language)
 
+        self.logger.debug("Open advanced settings")
         await page.locator(
             '//form//button[contains(normalize-space(), "Дополнительные настройки")]'
         ).click()
 
+        self.logger.debug("Open audience selector")
         await page.locator(
             '//button[contains(normalize-space(), "Выберите аудиторию")]'
         ).click()
 
+        self.logger.debug("Select audience: %s", audience)
         await page.locator(
             f'//div[@role="option"][contains(normalize-space(), "{audience}")]'
         ).click()
 
+        self.logger.debug("Fill author")
         await page.locator('//input[@name="author"]').type(author or "")
+        self.logger.debug("Save form")
         await page.locator('//button[contains(normalize-space(), "Сохранить")]').click()
 
         yield report_progress(1, "form_saved")
 
+        self.logger.debug("Open design gallery")
         await page.locator(
             '//button[contains(normalize-space(), "Смотреть все дизайны")]'
         ).click()
@@ -143,30 +155,37 @@ class SokraticSource(PresentationSource):
         styles_selector = "//div[@role='dialog']//h2[normalize-space()='Дизайны']//..//..//div[contains(@class, 'group/item')]"
 
         styles_count = await page.locator(styles_selector).count()
+        self.logger.debug("Found %s styles", styles_count)
 
         final_style_id = (
             random.randint(0, styles_count - 1) if style_id is None else style_id
         )
 
+        self.logger.debug("Select style: %s", final_style_id)
         await page.locator(styles_selector).nth(int(final_style_id)).click()
 
         yield report_progress(2, "style_selected")
 
+        self.logger.debug("Start generation")
         await page.locator(
             '//form//button[contains(normalize-space(), "Создать с AI")]'
         ).click()
 
         yield report_progress(3, "generation_started")
 
+        self.logger.debug("Wait for order page")
         await page.wait_for_url(f"{self.url}/ru/orders/*")
 
         pres_button = "//button[normalize-space(.)='Презентация'][not(contains(@class,'text-transparent'))]"
 
+        self.logger.debug("Wait for presentation download button")
         await page.locator(pres_button).wait_for(timeout=self.generation_timeout)
 
+        self.logger.debug("Open presentation download menu")
         await page.locator(pres_button).click()
         files = []
 
+        self.logger.info("Download PowerPoint")
         files.append(
             await self._download_presentation(
                 doc_format="PowerPoint",
@@ -176,6 +195,7 @@ class SokraticSource(PresentationSource):
 
         yield report_progress(4, "downloaded_powerpoint", files=list(files))
 
+        self.logger.info("Download PDF")
         files.append(
             await self._download_presentation(
                 doc_format="PDF",
@@ -192,22 +212,27 @@ class SokraticSource(PresentationSource):
         self._check_init()
         page = self._get_page()
 
+        self.logger.info("Open auth modal")
         await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
         screenshots_dir = self._ensure_screenshots_dir()
         await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_1.png"))
 
+        self.logger.debug("Locate email input")
         email_input = await page.query_selector("input[id='email']")
 
         if email_input is None:
             raise Exception("Email input not found on Sokratic login page")
 
+        self.logger.debug("Type email")
         await email_input.type(login)
 
+        self.logger.debug("Locate password input")
         password_input = await page.query_selector("input[id='password']")
 
         if password_input is None:
             raise Exception("Password input not found on Sokratic login page")
 
+        self.logger.debug("Type password")
         await password_input.type(password)
 
         form = (
@@ -216,9 +241,11 @@ class SokraticSource(PresentationSource):
             .filter(has=page.locator("input#password"))
         )
 
+        self.logger.debug("Submit auth form")
         submit_button = form.locator("button[type='submit']")
         await submit_button.first.click()
 
+        self.logger.debug("Wait for auth success")
         await page.wait_for_url(f"{self.url}/ru?auth-success=true", timeout=10000)
         await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_2.png"))
 
@@ -231,13 +258,13 @@ class SokraticSource(PresentationSource):
 
         if (
             await page.locator(
-                "//div[@role='dialog']//h2[normalize-space(.)='Реферальная программа']"
+                "//div[@role='dialog'][.//h2[normalize-space()='Пользователь']]"
             ).count()
             > 0
         ):
             self.logger.debug("Popup window detected, closing")
             await page.locator(
-                "//div[@role='dialog']//button[contains(@class, 'top-4')]"
+                "//div[@role='dialog']//button[contains(@class, '-top-2')]"
             ).click()
         else:
             self.logger.info("Popup window not detected, continue")
