@@ -207,10 +207,17 @@ class SokraticSource(PresentationSource):
 
         if password_input is None:
             raise Exception("Password input not found on Sokratic login page")
+
         await password_input.type(password)
 
-        submit_button = (await page.query_selector_all("button[type='submit']"))[1]
-        await submit_button.click()
+        form = (
+            page.locator("form")
+            .filter(has=page.locator("input#email"))
+            .filter(has=page.locator("input#password"))
+        )
+
+        submit_button = form.locator("button[type='submit']")
+        await submit_button.first.click()
 
         await page.wait_for_url(f"{self.url}/ru?auth-success=true", timeout=10000)
         await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_2.png"))
