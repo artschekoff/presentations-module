@@ -85,7 +85,7 @@ class SokraticSource(PresentationSource):
         ]
         total_steps = len(steps)
 
-        def progress_payload(
+        def report_progress(
             step_index: int, stage: str, files: list[str] | None = None
         ) -> ProgressPayload:
             payload: ProgressPayload = {
@@ -98,7 +98,7 @@ class SokraticSource(PresentationSource):
                 payload["files"] = files
             return payload
 
-        yield progress_payload(0, "start")
+        yield report_progress(0, "start")
 
         page = self._get_page()
 
@@ -134,7 +134,7 @@ class SokraticSource(PresentationSource):
         await page.locator('//input[@name="author"]').type(author or "")
         await page.locator('//button[contains(normalize-space(), "Сохранить")]').click()
 
-        yield progress_payload(1, "form_saved")
+        yield report_progress(1, "form_saved")
 
         await page.locator(
             '//button[contains(normalize-space(), "Смотреть все дизайны")]'
@@ -150,13 +150,13 @@ class SokraticSource(PresentationSource):
 
         await page.locator(styles_selector).nth(int(final_style_id)).click()
 
-        yield progress_payload(2, "style_selected")
+        yield report_progress(2, "style_selected")
 
         await page.locator(
             '//form//button[contains(normalize-space(), "Создать с AI")]'
         ).click()
 
-        yield progress_payload(3, "generation_started")
+        yield report_progress(3, "generation_started")
 
         await page.wait_for_url(f"{self.url}/ru/orders/*")
 
@@ -174,7 +174,7 @@ class SokraticSource(PresentationSource):
             )
         )
 
-        yield progress_payload(4, "downloaded_powerpoint", files=list(files))
+        yield report_progress(4, "downloaded_powerpoint", files=list(files))
 
         files.append(
             await self._download_presentation(
@@ -183,8 +183,8 @@ class SokraticSource(PresentationSource):
             )
         )
 
-        yield progress_payload(5, "downloaded_pdf", files=list(files))
-        yield progress_payload(6, "done", files=list(files))
+        yield report_progress(5, "downloaded_pdf", files=list(files))
+        yield report_progress(6, "done", files=list(files))
 
         return
 
