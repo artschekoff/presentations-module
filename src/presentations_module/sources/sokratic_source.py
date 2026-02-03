@@ -278,6 +278,9 @@ class SokraticSource(PresentationSource):
             timeout=self.generation_timeout
         )
 
+        # wait for 5 seconds
+        await page.wait_for_timeout(5000)
+
         await page.locator("//button[normalize-space(.)='Текст выступления']").click(
             timeout=self.generation_timeout
         )
