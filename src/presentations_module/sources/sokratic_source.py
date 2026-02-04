@@ -58,7 +58,16 @@ class SokraticSource(PresentationSource):
         if not self.is_init:
             self.browser = await self.chrome.launch(headless=headless)
             self.is_init = True
-            self.page = await self.browser.new_page()
+            self.page = await self.browser.new_page(
+                viewport={"width": 1280, "height": 720},
+                locale="ru-RU",
+                timezone_id="Europe/Moscow",
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            )
 
     def _check_init(self):
         if not self.is_init:
