@@ -150,7 +150,7 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Select language: %s", language)
         await page.locator(
             '//form//select[.//option[contains(normalize-space(), "Русский")]]'
-        ).select_option(label=language)
+        ).select_option(str(language))
 
         self.logger.debug("Open advanced settings")
         await page.locator(
@@ -173,7 +173,9 @@ class SokraticSource(PresentationSource):
         await page.locator('//button[contains(normalize-space(), "Сохранить")]').click()
 
         files.append(
-            await self._save_generation_screenshot(page, screenshots_dir, 1, "form_saved")
+            await self._save_generation_screenshot(
+                page, screenshots_dir, 1, "form_saved"
+            )
         )
         yield report_progress(1, "form_saved", files=list(files))
 
@@ -266,9 +268,7 @@ class SokraticSource(PresentationSource):
         )
         yield report_progress(5, "downloaded_pdf", files=list(files))
 
-        files.append(
-            await self._download_text(save_path=generation_dir)
-        )
+        files.append(await self._download_text(save_path=generation_dir))
 
         files.append(
             await self._save_generation_screenshot(
