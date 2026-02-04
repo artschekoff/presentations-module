@@ -24,6 +24,7 @@ class SokraticSource(PresentationSource):
         generation_timeout: int = GENERATION_TIMEOUT,
     ) -> None:
         self.chrome = playwright.chromium
+        self.browser = None
         self.url = "https://sokratic.ru"
         self.is_init = False
         self.page = None
@@ -128,7 +129,7 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Select language: %s", language)
         await page.locator(
             '//form//select[.//option[contains(normalize-space(), "Русский")]]'
-        ).select_option(language)
+        ).select_option(label=language)
 
         self.logger.debug("Open advanced settings")
         await page.locator(
@@ -162,9 +163,21 @@ class SokraticSource(PresentationSource):
         styles_count = await page.locator(styles_selector).count()
         self.logger.debug("Found %s styles", styles_count)
 
-        final_style_id = (
-            random.randint(0, styles_count - 1) if style_id is None else style_id
-        )
+        if styles_count <= 0:
+            raise Exception("No styles found in design gallery")
+
+        if style_id is None:
+            final_style_id = random.randint(0, styles_count - 1)
+        else:
+            try:
+                final_style_id = int(style_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("style_id must be a numeric index") from exc
+
+            if final_style_id < 0 or final_style_id >= styles_count:
+                raise ValueError(
+                    f"style_id index out of range: {final_style_id} (styles_count={styles_count})"
+                )
 
         self.logger.debug("Select style: %s", final_style_id)
         await page.locator(styles_selector).nth(int(final_style_id)).click()
