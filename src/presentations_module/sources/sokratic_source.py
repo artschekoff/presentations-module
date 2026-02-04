@@ -157,9 +157,12 @@ class SokraticSource(PresentationSource):
         ).select_option(str(slides_amount))
 
         self.logger.debug("Select language: %s", language)
-        await page.locator(
-            '//form//select[.//option[contains(normalize-space(), "Русский")]]'
-        ).select_option(str(language))
+
+        await page.locator("(//form//select)[2]").select_option(str(language))
+
+        # await page.locator(
+        #     '//form//select[.//option[contains(normalize-space(), "Русский")]]'
+        # ).select_option(str(language))
 
         self.logger.debug("Open advanced settings")
         await page.locator(
