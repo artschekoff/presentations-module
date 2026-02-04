@@ -301,7 +301,11 @@ class SokraticSource(PresentationSource):
         self.logger.info("Open auth modal")
         await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
         screenshots_dir = self._ensure_screenshots_dir()
-        # await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_1.png"))
+        # save screenshot here
+
+        await self._save_generation_screenshot(
+            page, screenshots_dir, 0, "sokratic_auth_1"
+        )
 
         self.logger.debug("Locate email input")
         email_input = await page.query_selector("input[id='email']")
@@ -330,6 +334,10 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Submit auth form")
         submit_button = form.locator("button[type='submit']")
         await submit_button.first.click()
+
+        await self._save_generation_screenshot(
+            page, screenshots_dir, 1, "sokratic_auth_2"
+        )
 
         self.logger.debug("Wait for auth success")
         await page.wait_for_url(f"{self.url}/ru?auth-success=true", timeout=10000)
