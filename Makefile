@@ -1,4 +1,4 @@
-.PHONY: lint run build
+.PHONY: lint run build bump-version
 
 lint:
 	pylint src/presentations_module --disable=R,C --max-line-length=120
