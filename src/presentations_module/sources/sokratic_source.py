@@ -299,10 +299,14 @@ class SokraticSource(PresentationSource):
         page = self._get_page()
 
         self.logger.info("Open auth modal")
-        await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
-        screenshots_dir = self._ensure_screenshots_dir()
-        # save screenshot here
 
+        await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
+
+        await page.locator("//div[@role='dialog']").wait_for(timeout=5000)
+
+        screenshots_dir = self._ensure_screenshots_dir()
+
+        # save screenshot here
         await self._save_generation_screenshot(
             page, screenshots_dir, 0, "sokratic_auth_1"
         )
