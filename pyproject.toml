@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "presentations_module"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
   "playwright==1.57.0",
   "pymongo==4.16.0",
