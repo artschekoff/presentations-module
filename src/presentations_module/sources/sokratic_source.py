@@ -302,7 +302,7 @@ class SokraticSource(PresentationSource):
 
         await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
 
-        await page.locator("//div[@role='dialog']").wait_for(timeout=5000)
+        await page.locator("//div[@role='dialog']").wait_for(timeout=10000)
 
         screenshots_dir = self._ensure_screenshots_dir()
 
@@ -344,7 +344,11 @@ class SokraticSource(PresentationSource):
         )
 
         self.logger.debug("Wait for auth success")
-        await page.wait_for_url(f"{self.url}/ru?auth-success=true", timeout=10000)
+        await page.wait_for_url(
+            f"{self.url}/ru?auth-success=true",
+            timeout=float(os.environ["SITE_THROTTLE_DELAY_MS"]),
+        )
+
         # await page.screenshot(path=os.path.join(screenshots_dir, "sokratic_auth_2.png"))
 
     async def _download_text(self, save_path: str) -> str:
@@ -364,7 +368,7 @@ class SokraticSource(PresentationSource):
         )
 
         # wait for 5 seconds
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(float(os.environ["SITE_THROTTLE_DELAY_MS"]))
 
         await page.locator("//button[normalize-space(.)='Текст выступления']").click(
             timeout=self.generation_timeout
