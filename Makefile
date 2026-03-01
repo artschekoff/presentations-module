@@ -1,7 +1,7 @@
 .PHONY: lint run build bump-version
 
 lint:
-	pylint src/presentations_module --disable=R,C --max-line-length=120
+	python3 -m pylint src/presentations_module --disable=R,C --max-line-length=120
 
 run:
 	python main.py

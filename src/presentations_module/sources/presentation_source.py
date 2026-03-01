@@ -16,7 +16,8 @@ class PresentationSource(abc.ABC):
         topic: str,
         language: str,
         slides_amount: int,
-        audience: str,
+        grade: str,
+        subject: str,
         author: str | None = None,
         style_id: str | None = None,
     ):

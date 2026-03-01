@@ -87,7 +87,7 @@ class SokraticSource(PresentationSource):
 
     def _check_init(self):
         if not self.is_init:
-            raise Exception("Browser is not initialized. Call 'init_async' first.")
+            raise RuntimeError("Browser is not initialized. Call 'init_async' first.")
 
     def _get_page(self) -> Page:
         self._check_init()
@@ -217,7 +217,7 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Found %s styles", styles_count)
 
         if styles_count <= 0:
-            raise Exception("No styles found in design gallery")
+            raise RuntimeError("No styles found in design gallery")
 
         if style_id is None:
             final_style_id = random.randint(0, styles_count - 1)
@@ -335,7 +335,7 @@ class SokraticSource(PresentationSource):
         email_input = await page.query_selector("input[id='email']")
 
         if email_input is None:
-            raise Exception("Email input not found on Sokratic login page")
+            raise RuntimeError("Email input not found on Sokratic login page")
 
         self.logger.debug("Type email")
         await email_input.type(login)
@@ -344,7 +344,7 @@ class SokraticSource(PresentationSource):
         password_input = await page.query_selector("input[id='password']")
 
         if password_input is None:
-            raise Exception("Password input not found on Sokratic login page")
+            raise RuntimeError("Password input not found on Sokratic login page")
 
         self.logger.debug("Type password")
         await password_input.type(password)
@@ -403,7 +403,7 @@ class SokraticSource(PresentationSource):
         text_content = await page.locator(markdown_content_path).inner_text()
 
         if not text_content:
-            raise Exception("Failed to download text content")
+            raise RuntimeError("Failed to download text content")
 
         file_path = os.path.join(save_path, "presentation_text.txt")
 

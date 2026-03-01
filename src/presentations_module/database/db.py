@@ -63,7 +63,7 @@ class MongoStorage:
 
     def save_error(
         self,
-        id: ObjectId,
+        record_id: ObjectId,
         error: str,
     ) -> ObjectId:
         payload: dict[str, Any] = {
@@ -72,13 +72,13 @@ class MongoStorage:
             "completed_at": datetime.utcnow(),
         }
 
-        result = self._collection.update_one({"_id": id}, {"$set": payload})
+        result = self._collection.update_one({"_id": record_id}, {"$set": payload})
 
         return result.upserted_id
 
     def save_result(
         self,
-        id: ObjectId,
+        record_id: ObjectId,
         files: Iterable[str],
     ) -> ObjectId:
         payload: dict[str, Any] = {
@@ -87,7 +87,7 @@ class MongoStorage:
             "completed_at": datetime.utcnow(),
         }
 
-        result = self._collection.update_one({"_id": id}, {"$set": payload})
+        result = self._collection.update_one({"_id": record_id}, {"$set": payload})
 
         return result.upserted_id
 
@@ -112,7 +112,7 @@ _cached_storage: MongoStorage | None = None
 
 def get_storage() -> MongoStorage:
     """Return a cached MongoStorage instance to avoid extra connections."""
-    global _cached_storage
+    global _cached_storage  # pylint: disable=global-statement
     if _cached_storage is None:
         _cached_storage = MongoStorage()
     return _cached_storage
