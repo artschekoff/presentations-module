@@ -10,7 +10,8 @@ class PresentationDocument:
     topic: str
     language: str
     slides_amount: int
-    audience: str
+    grade: str
+    subject: str
     author: str | None
     status: str = "pending"
     files: list[str] = field(default_factory=list)

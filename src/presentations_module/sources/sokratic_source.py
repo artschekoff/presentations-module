@@ -11,6 +11,19 @@ from ..core.progress_payload import ProgressPayload
 
 GENERATION_TIMEOUT = 1000 * 60 * 10  # 10 minutes
 
+GRADE_MAPPING = {
+    "1": "Начальная школа",
+    "2": "Начальная школа",
+    "3": "Начальная школа",
+    "4": "Начальная школа",
+    "5": "Средняя школа",
+    "6": "Средняя школа",
+    "7": "Средняя школа",
+    "8": "Средняя школа",
+    "9": "Средняя школа",
+    "10": "Старшая школа",
+    "11": "Старшая школа",
+}
 
 class SokraticSource(PresentationSource):
     browser: Browser | None
@@ -22,10 +35,13 @@ class SokraticSource(PresentationSource):
         logger: logging.Logger,
         assets_dir: str = "./assets/presentations",
         generation_timeout: int = GENERATION_TIMEOUT,
+        details_prompt: str | None = None,
     ) -> None:
         self.chrome = playwright.chromium
         self.browser = None
         self.url = "https://sokratic.ru"
+        self.details_prompt = details_prompt or \
+            "презентация на школьный урок по предмету {0} для {1} класса"
         self.is_init = False
         self.page = None
         self.logger = logger
@@ -91,7 +107,8 @@ class SokraticSource(PresentationSource):
         topic: str,
         language: str,
         slides_amount: int,
-        audience: str,
+        grade: str,
+        subject: str,
         author: str | None = None,
         style_id: str | None = None,
     ) -> AsyncIterator[ProgressPayload]:
@@ -160,10 +177,6 @@ class SokraticSource(PresentationSource):
 
         await page.locator("(//form//select)[2]").select_option(str(language))
 
-        # await page.locator(
-        #     '//form//select[.//option[contains(normalize-space(), "Русский")]]'
-        # ).select_option(str(language))
-
         self.logger.debug("Open advanced settings")
         await page.locator(
             '//form//button[contains(normalize-space(), "Дополнительные настройки")]'
@@ -174,10 +187,12 @@ class SokraticSource(PresentationSource):
             '//button[contains(normalize-space(), "Выберите аудиторию")]'
         ).click()
 
-        self.logger.debug("Select audience: %s", audience)
-        await page.locator(
-            f'//div[@role="option"][contains(normalize-space(), "{audience}")]'
-        ).click()
+        if grade not in GRADE_MAPPING:
+            raise ValueError(f"Invalid grade: {grade}. Must be one of: {list(GRADE_MAPPING.keys())}")
+
+        self.logger.debug("Select audience: %s", grade)
+        audience_option = GRADE_MAPPING[grade]
+        await page.locator(f'//div[@role="option" and normalize-space()="{audience_option}"]').click()
 
         self.logger.debug("Fill author")
         await page.locator('//input[@name="author"]').type(author or "")
@@ -241,6 +256,11 @@ class SokraticSource(PresentationSource):
 
         self.logger.debug("Wait for order page")
         await page.wait_for_url(f"{self.url}/ru/orders/*")
+
+        self.logger.debug("Specifying details for generation")
+        details_prompt_filled = self.details_prompt.format(subject, grade)
+        await page.locator('//form//textarea').type(details_prompt_filled)
+        await page.locator('//form//button[@type="submit"]').click()
 
         pres_button = "//button[normalize-space(.)='Презентация'][not(contains(@class,'text-transparent'))]"
 
@@ -441,7 +461,8 @@ async def generate_presentation(
     topic: str,
     language: str,
     slides_amount: int,
-    audience: str,
+    grade: str,
+    subject: str,
     author: str | None = None,
     style_id: str | None = None,
     generation_timeout: int = GENERATION_TIMEOUT,
@@ -461,7 +482,8 @@ async def generate_presentation(
             topic=topic,
             language=language,
             slides_amount=slides_amount,
-            audience=audience,
+            grade=grade,
+            subject=subject,
             author=author,
             style_id=style_id,
         ):

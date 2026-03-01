@@ -28,30 +28,34 @@ MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "2"))
 tasks = [
     PresentationTask(
         topic="Влияние климата на экосистемы",
-        language="kz",
+        language="ru",
         slides_amount=10,
-        audience="Средняя школа",
+        grade="5",
+        subject="Экология",
         author="Вася Пупкин",
     ),
     # PresentationTask(
     #     topic="Влияние климата на домашних животных",
     #     language="kz",
     #     slides_amount=30,
-    #     audience="Средняя школа",
+    #     grade="5",
+    #     subject="Экология",       
     #     author="Кривощеков Артем",
     # ),
     # PresentationTask(
     #     topic="Популяция китов",
     #     language="kz",
     #     slides_amount=30,
-    #     audience="Средняя школа",
+    #     grade="5",
+    #     subject="Биология",
     #     author="Кривощеков Артем",
     # ),
     # PresentationTask(
     #     topic="Проблемы концерна автоваз",
     #     language="kz",
     #     slides_amount=30,
-    #     audience="Средняя школа",
+    #     grade="5",
+    #     subject="Экономика",
     #     author="Кривощеков Артем",
     # ),
 ]
@@ -80,8 +84,9 @@ async def run_presentation_task(
         async for update in source.generate_presentation(
             topic=task.topic,
             language=task.language,
+            grade=task.grade,
+            subject=task.subject,
             slides_amount=task.slides_amount,
-            audience=task.audience,
             author=task.author,
         ):
             if update.get("stage") == "done":
@@ -112,7 +117,8 @@ def set_tasks() -> list[tuple[ObjectId, PresentationTask]]:
             topic=task.topic,
             language=task.language,
             slides_amount=task.slides_amount,
-            audience=task.audience,
+            grade=task.grade,
+            subject=task.subject,
             author=task.author,
         )
 
