@@ -60,7 +60,6 @@ tasks = [
     # ),
 ]
 
-
 async def run_presentation_task(
     task_id: ObjectId, task: PresentationTask
 ) -> tuple[PresentationTask, list[str]]:
