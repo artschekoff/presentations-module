@@ -70,7 +70,11 @@ async def run_presentation_task(
     try:
         apw = await async_playwright().start()
 
-        source = SokraticSource(apw, logger=logger)
+        source = SokraticSource(
+            apw,
+            logger=logger,
+            playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
+        )
 
         await source.init_async(headless=False)
 

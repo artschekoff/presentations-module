@@ -36,6 +36,7 @@ class SokraticSource(PresentationSource):
         assets_dir: str = "./assets/presentations",
         generation_timeout: int = GENERATION_TIMEOUT,
         details_prompt: str | None = None,
+        playwright_default_timeout: int | None = None,
     ) -> None:
         self.chrome = playwright.chromium
         self.browser = None
@@ -47,6 +48,7 @@ class SokraticSource(PresentationSource):
         self.logger = logger
         self.assets_dir = assets_dir
         self.generation_timeout = generation_timeout
+        self.playwright_default_timeout = playwright_default_timeout
 
     def _ensure_assets_dir(self) -> None:
         os.makedirs(self.assets_dir, exist_ok=True)
@@ -84,6 +86,8 @@ class SokraticSource(PresentationSource):
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
             )
+            if self.playwright_default_timeout is not None:
+                self.page.set_default_timeout(self.playwright_default_timeout)
 
     def _check_init(self):
         if not self.is_init:
