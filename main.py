@@ -10,7 +10,7 @@ from playwright.async_api import Page, async_playwright
 from presentations_module.core.presentation_document import PresentationDocument
 from presentations_module.core.presentation_task import PresentationTask
 from presentations_module.database.db import MongoStorage
-from presentations_module.sources.sokratic_source import SokraticSource
+from presentations_module.sources.sokratic_source import DownloadFormat, SokraticSource
 
 load_dotenv()
 
@@ -92,6 +92,7 @@ async def run_presentation_task(
             subject=task.subject,
             slides_amount=task.slides_amount,
             author=task.author,
+            formats_to_download=[DownloadFormat.POWERPOINT, DownloadFormat.TEXT],
         ):
             if update.get("stage") == "done":
                 file_paths = list(update.get("files", []))
