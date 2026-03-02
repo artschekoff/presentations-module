@@ -330,7 +330,7 @@ class SokraticSource(PresentationSource):
             files.append(path)
         yield report_progress("done", files=list(files))
 
-    async def authenticate(self, login: str, password: str) -> None:
+    async def authenticate(self, login: str, password: str, generation_dir: str | None = None) -> None:
         self._check_init()
         page = self._get_page()
 
@@ -341,10 +341,11 @@ class SokraticSource(PresentationSource):
         await page.locator("//div[@role='dialog']").wait_for(timeout=10000)
 
         self._ensure_assets_dir()
+        screenshot_dir = generation_dir or self.assets_dir
 
         # save screenshot here
         await self._save_generation_screenshot(
-            page, self.assets_dir, 0, "sokratic_auth_1"
+            page, screenshot_dir, 0, "sokratic_auth_1"
         )
 
         self.logger.debug("Locate email input")
@@ -376,7 +377,7 @@ class SokraticSource(PresentationSource):
         await submit_button.first.click()
 
         await self._save_generation_screenshot(
-            page, self.assets_dir, 1, "sokratic_auth_2"
+            page, screenshot_dir, 1, "sokratic_auth_2"
         )
 
         self.logger.debug("Wait for auth success")

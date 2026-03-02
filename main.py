@@ -7,6 +7,8 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from playwright.async_api import Page, async_playwright
 
+import uuid
+
 from presentations_module.core.presentation_document import PresentationDocument
 from presentations_module.core.presentation_task import PresentationTask
 from presentations_module.database.db import MongoStorage
@@ -79,9 +81,13 @@ async def run_presentation_task(
 
         await source.init_async(headless=False)
 
+        generation_id = uuid.uuid4().hex
+        generation_dir = source._ensure_generation_dir(generation_id)
+
         await source.authenticate(
             login=os.environ["SOKRATIC_USERNAME"],
             password=os.environ["SOKRATIC_PASSWORD"],
+            generation_dir=generation_dir,
         )
 
         file_paths: list[str] = []
@@ -93,6 +99,7 @@ async def run_presentation_task(
             slides_amount=task.slides_amount,
             author=task.author,
             formats_to_download=[DownloadFormat.POWERPOINT, DownloadFormat.TEXT],
+            generation_id=generation_id,
         ):
             if update.get("stage") == "done":
                 file_paths = list(update.get("files", []))
