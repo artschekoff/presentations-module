@@ -37,6 +37,7 @@ class SokraticSource(PresentationSource):
         generation_timeout: int = GENERATION_TIMEOUT,
         details_prompt: str | None = None,
         playwright_default_timeout: int | None = None,
+        save_screenshots: bool = True,
     ) -> None:
         self.chrome = playwright.chromium
         self.browser = None
@@ -49,6 +50,7 @@ class SokraticSource(PresentationSource):
         self.assets_dir = assets_dir
         self.generation_timeout = generation_timeout
         self.playwright_default_timeout = playwright_default_timeout
+        self.save_screenshots = save_screenshots
 
     def _ensure_assets_dir(self) -> None:
         os.makedirs(self.assets_dir, exist_ok=True)
@@ -66,7 +68,9 @@ class SokraticSource(PresentationSource):
 
     async def _save_generation_screenshot(
         self, page: Page, screenshots_dir: str, step_index: int, stage: str
-    ) -> str:
+    ) -> str | None:
+        if not self.save_screenshots:
+            return None
         filename = f"{step_index + 1:02d}_{stage}.png"
         path = os.path.join(screenshots_dir, filename)
         await page.screenshot(path=path)
@@ -122,9 +126,8 @@ class SokraticSource(PresentationSource):
 
         # generate random uuid for this generation
         generation_id = uuid.uuid4().hex
-        generation_dir = self._ensure_generation_dir(generation_id)
-        screenshots_dir = os.path.join(generation_dir, "screenshots")
-        os.makedirs(screenshots_dir, exist_ok=True)
+        self._ensure_generation_dir(generation_id)
+        screenshots_dir = self._ensure_screenshots_dir()
 
         steps = [
             "start",
@@ -155,9 +158,8 @@ class SokraticSource(PresentationSource):
 
         files: list[str] = []
 
-        files.append(
-            await self._save_generation_screenshot(page, screenshots_dir, 0, "start")
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 0, "start"):
+            files.append(path)
         yield report_progress(0, "start", files=list(files))
 
         self.logger.debug("Click 'Create with AI' on landing page")
@@ -203,11 +205,8 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Save form")
         await page.locator('//button[contains(normalize-space(), "Сохранить")]').click()
 
-        files.append(
-            await self._save_generation_screenshot(
-                page, screenshots_dir, 1, "form_saved"
-            )
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 1, "form_saved"):
+            files.append(path)
         yield report_progress(1, "form_saved", files=list(files))
 
         self.logger.debug("Open design gallery")
@@ -239,11 +238,8 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Select style: %s", final_style_id)
         await page.locator(styles_selector).nth(int(final_style_id)).click()
 
-        files.append(
-            await self._save_generation_screenshot(
-                page, screenshots_dir, 2, "style_selected"
-            )
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 2, "style_selected"):
+            files.append(path)
         yield report_progress(2, "style_selected", files=list(files))
 
         self.logger.debug("Start generation")
@@ -251,11 +247,8 @@ class SokraticSource(PresentationSource):
             '//form//button[contains(normalize-space(), "Создать с AI")]'
         ).click()
 
-        files.append(
-            await self._save_generation_screenshot(
-                page, screenshots_dir, 3, "generation_started"
-            )
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 3, "generation_started"):
+            files.append(path)
         yield report_progress(3, "generation_started", files=list(files))
 
         self.logger.debug("Wait for order page")
@@ -282,11 +275,8 @@ class SokraticSource(PresentationSource):
             )
         )
 
-        files.append(
-            await self._save_generation_screenshot(
-                page, screenshots_dir, 4, "downloaded_powerpoint"
-            )
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 4, "downloaded_powerpoint"):
+            files.append(path)
         yield report_progress(4, "downloaded_powerpoint", files=list(files))
 
         self.logger.info("Download PDF")
@@ -297,25 +287,18 @@ class SokraticSource(PresentationSource):
             )
         )
 
-        files.append(
-            await self._save_generation_screenshot(
-                page, screenshots_dir, 5, "downloaded_pdf"
-            )
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 5, "downloaded_pdf"):
+            files.append(path)
         yield report_progress(5, "downloaded_pdf", files=list(files))
 
         files.append(await self._download_text(save_path=generation_dir))
 
-        files.append(
-            await self._save_generation_screenshot(
-                page, screenshots_dir, 6, "downloaded_text"
-            )
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 6, "downloaded_text"):
+            files.append(path)
         yield report_progress(6, "downloaded_text", files=list(files))
 
-        files.append(
-            await self._save_generation_screenshot(page, screenshots_dir, 7, "done")
-        )
+        if path := await self._save_generation_screenshot(page, screenshots_dir, 7, "done"):
+            files.append(path)
         yield report_progress(7, "done", files=list(files))
 
     async def authenticate(self, login: str, password: str) -> None:

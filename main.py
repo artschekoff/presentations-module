@@ -74,6 +74,7 @@ async def run_presentation_task(
             apw,
             logger=logger,
             playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
+            save_screenshots=os.environ.get("SAVE_SCREENSHOTS", "true").lower() == "true",
         )
 
         await source.init_async(headless=False)
