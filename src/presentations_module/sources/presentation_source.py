@@ -23,5 +23,6 @@ class PresentationSource(abc.ABC):
         author: str | None = None,
         style_id: str | None = None,
         formats_to_download: list[DownloadFormat] | None = None,
+        generation_id: str | None = None,
     ):
         """Retrieve a list of presentations."""
