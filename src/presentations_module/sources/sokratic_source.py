@@ -1,22 +1,16 @@
 import logging
 import os
 import random
-from enum import Enum
 from typing import AsyncIterator
 import uuid
 
 from playwright.async_api import Playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
 
+from .download_format import DownloadFormat
 from .presentation_source import PresentationSource
 from ..core.progress_payload import ProgressPayload
 
 GENERATION_TIMEOUT = 1000 * 60 * 10  # 10 minutes
-
-
-class DownloadFormat(str, Enum):
-    POWERPOINT = "PowerPoint"
-    PDF = "PDF"
-    TEXT = "text"
 
 GRADE_MAPPING = {
     "1": "Младшая школа",

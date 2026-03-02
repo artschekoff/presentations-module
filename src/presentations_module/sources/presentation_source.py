@@ -1,5 +1,7 @@
 import abc
 
+from .download_format import DownloadFormat
+
 
 class PresentationSource(abc.ABC):
     @abc.abstractmethod
@@ -20,5 +22,6 @@ class PresentationSource(abc.ABC):
         subject: str,
         author: str | None = None,
         style_id: str | None = None,
+        formats_to_download: list[DownloadFormat] | None = None,
     ):
         """Retrieve a list of presentations."""
