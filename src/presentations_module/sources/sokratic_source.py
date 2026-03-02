@@ -439,15 +439,6 @@ class SokraticSource(PresentationSource):
         popup_locator = page.locator(
             "//div[@role='dialog'][.//h2[normalize-space()='Пользователь']]"
         )
-        try:
-            await popup_locator.wait_for(state="visible", timeout=10000)
-            self.logger.debug("Popup window detected, closing")
-            await page.locator(
-                "//div[@role='dialog']//button[contains(@class, '-top-2')]"
-            ).click()
-            await popup_locator.wait_for(state="hidden", timeout=5000)
-        except PlaywrightTimeoutError:
-            self.logger.info("Popup window not detected, continue")
 
         self.logger.debug("Click download button")
 
@@ -460,6 +451,16 @@ class SokraticSource(PresentationSource):
             await page.locator(
                 f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
             ).click()
+
+        try:
+            await popup_locator.wait_for(state="visible", timeout=5000)
+            self.logger.debug("Popup window detected after download, closing")
+            await page.locator(
+                "//div[@role='dialog']//button[contains(@class, '-top-2')]"
+            ).click()
+            await popup_locator.wait_for(state="hidden", timeout=5000)
+        except PlaywrightTimeoutError:
+            self.logger.info("Popup window not detected after download, continue")
 
         download = await download_info.value
         ext = os.path.splitext(download.suggested_filename)[1]
