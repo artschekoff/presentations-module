@@ -12,6 +12,7 @@ import uuid
 from presentations_module.core.presentation_document import PresentationDocument
 from presentations_module.core.presentation_task import PresentationTask
 from presentations_module.database.db import MongoStorage
+from presentations_module.files import S3FileStorage
 from presentations_module.sources.sokratic_source import DownloadFormat, SokraticSource
 
 load_dotenv()
@@ -62,6 +63,18 @@ tasks = [
     # ),
 ]
 
+def _create_s3_storage() -> S3FileStorage:
+    return S3FileStorage(
+        bucket=os.environ["S3_BUCKET"],
+        prefix=os.getenv("S3_PREFIX", ""),
+        region_name=os.getenv("S3_REGION"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        endpoint_url=os.getenv("S3_ENDPOINT_URL"),
+        verify_ssl=os.getenv("S3_VERIFY_SSL", "true").lower() == "true",
+    )
+
+
 async def run_presentation_task(
     task_id: ObjectId, task: PresentationTask
 ) -> tuple[PresentationTask, list[str]]:
@@ -75,14 +88,16 @@ async def run_presentation_task(
         source = SokraticSource(
             apw,
             logger=logger,
+            assets_dir=os.getenv("ASSETS_DIR", "./assets/presentations"),
             playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
             save_screenshots=os.environ.get("SAVE_SCREENSHOTS", "true").lower() == "true",
+            storage=_create_s3_storage(),
         )
 
         await source.init_async(headless=False)
 
         generation_id = uuid.uuid4().hex
-        generation_dir = source._ensure_generation_dir(generation_id)
+        generation_dir = await source._ensure_generation_dir(generation_id)
 
         await source.authenticate(
             login=os.environ["SOKRATIC_USERNAME"],

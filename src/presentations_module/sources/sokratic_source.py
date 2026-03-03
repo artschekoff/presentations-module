@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import tempfile
 from typing import AsyncIterator
 import uuid
 
@@ -8,6 +9,7 @@ from playwright.async_api import Playwright, Browser, Page, TimeoutError as Play
 
 from .download_format import DownloadFormat
 from .presentation_source import PresentationSource
+from ..files import FileStorage, LocalFileStorage
 from ..core.progress_payload import ProgressPayload
 
 GENERATION_TIMEOUT = 1000 * 60 * 10  # 10 minutes
@@ -40,6 +42,7 @@ class SokraticSource(PresentationSource):
         playwright_default_timeout: int | None = None,
         save_screenshots: bool = True,
         site_throttle_delay_ms: float = 5000,
+        storage: FileStorage | None = None,
     ) -> None:
         self.chrome = playwright.chromium
         self.browser = None
@@ -54,13 +57,14 @@ class SokraticSource(PresentationSource):
         self.playwright_default_timeout = playwright_default_timeout
         self.save_screenshots = save_screenshots
         self.site_throttle_delay_ms = site_throttle_delay_ms
+        self.storage = storage or LocalFileStorage()
 
-    def _ensure_assets_dir(self) -> None:
-        os.makedirs(self.assets_dir, exist_ok=True)
+    async def _ensure_assets_dir(self) -> None:
+        await self.storage.makedirs(self.assets_dir)
 
-    def _ensure_generation_dir(self, generation_id: str) -> str:
-        generation_dir = os.path.join(self.assets_dir, generation_id)
-        os.makedirs(generation_dir, exist_ok=True)
+    async def _ensure_generation_dir(self, generation_id: str) -> str:
+        generation_dir = self.storage.build_path(generation_id)
+        await self.storage.makedirs(generation_dir)
         return generation_dir
 
     async def _save_generation_screenshot(
@@ -69,9 +73,9 @@ class SokraticSource(PresentationSource):
         if not self.save_screenshots:
             return None
         filename = f"{step_index + 1:02d}_{stage}.png"
-        path = os.path.join(generation_dir, filename)
-        await page.screenshot(path=path)
-        return path
+        key = self.storage.build_path(generation_dir, filename)
+        data = await page.screenshot()
+        return await self.storage.save_bytes(key, data)
 
     async def init_async(self, headless: bool = False):
         if not self.is_init:
@@ -120,12 +124,12 @@ class SokraticSource(PresentationSource):
         generation_id: str | None = None,
     ) -> AsyncIterator[ProgressPayload]:
         self._check_init()
-        self._ensure_assets_dir()
+        await self._ensure_assets_dir()
         self.logger.info("Start presentation generation")
 
         if generation_id is None:
             generation_id = uuid.uuid4().hex
-        generation_dir = self._ensure_generation_dir(generation_id)
+        generation_dir = await self._ensure_generation_dir(generation_id)
 
         _formats = (
             set(formats_to_download) if formats_to_download is not None else set(DownloadFormat)
@@ -270,7 +274,7 @@ class SokraticSource(PresentationSource):
         yield report_progress("generation_started", files=list(files))
 
         self.logger.debug("Wait for order page")
-        await page.wait_for_url(f"{self.url}/ru/orders/*")
+        await page.wait_for_url(f"{self.url}/ru/orders/*", timeout=self.generation_timeout)
 
         self.logger.debug("Specifying details for generation")
         details_prompt_filled = self.details_prompt.format(subject, grade)
@@ -343,7 +347,7 @@ class SokraticSource(PresentationSource):
 
         await page.locator("//div[@role='dialog']").wait_for(timeout=self.playwright_default_timeout)
 
-        self._ensure_assets_dir()
+        await self._ensure_assets_dir()
         screenshot_dir = generation_dir or self.assets_dir
 
         # save screenshot here
@@ -392,8 +396,7 @@ class SokraticSource(PresentationSource):
         # await page.screenshot(path=os.path.join(generation_dir, "sokratic_auth_2.png"))
 
     async def _download_text(self, save_path: str, file_stem: str) -> str:
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
+        await self.storage.makedirs(save_path)
 
         self.logger.debug("Downloading text")
 
@@ -417,19 +420,13 @@ class SokraticSource(PresentationSource):
 
         await page.locator(markdown_content_path).wait_for()
 
-        # get text content
-
         text_content = await page.locator(markdown_content_path).inner_text()
 
         if not text_content:
             raise RuntimeError("Failed to download text content")
 
-        file_path = os.path.join(save_path, f"{file_stem}.txt")
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(text_content)
-
-        return file_path
+        key = self.storage.build_path(save_path, f"{file_stem}.txt")
+        return await self.storage.save_text(key, text_content)
 
     async def _close_popup_if_visible(self, page: Page, popup_locator, timeout: int = 5000) -> bool:
         try:
@@ -445,8 +442,7 @@ class SokraticSource(PresentationSource):
             return False
 
     async def _download_presentation(self, doc_format: str, save_path: str, file_stem: str) -> str:
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
+        await self.storage.makedirs(save_path)
 
         self.logger.debug("Check ref window")
         page = self._get_page()
@@ -479,11 +475,19 @@ class SokraticSource(PresentationSource):
 
         download = await download_info.value
         ext = os.path.splitext(download.suggested_filename)[1]
-        filepath = os.path.join(save_path, f"{file_stem}{ext}")
+        dest_key = self.storage.build_path(save_path, f"{file_stem}{ext}")
 
-        await download.save_as(filepath)
-        self.logger.debug(f"File saved to {filepath}")
+        fd, tmp_path = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
 
+        try:
+            await download.save_as(tmp_path)
+            filepath = await self.storage.save_from_local_path(dest_key, tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        self.logger.debug("File saved to %s", filepath)
         return filepath
 
 

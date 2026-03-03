@@ -9,6 +9,7 @@ dependencies = [
   "playwright==1.57.0",
   "pymongo==4.16.0",
   "python-dotenv==1.2.1",
+  "aioboto3>=13.0",
 ]
 
 [tool.setuptools]
@@ -16,3 +17,12 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+]
