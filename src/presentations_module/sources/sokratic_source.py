@@ -331,6 +331,7 @@ class SokraticSource(PresentationSource):
         ):
             files.append(path)
         yield report_progress("done", files=list(files))
+        self.logger.info("Presentation generation completed successfully")
 
     async def authenticate(self, login: str, password: str, generation_dir: str | None = None) -> None:
         self._check_init()
