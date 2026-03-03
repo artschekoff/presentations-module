@@ -466,6 +466,8 @@ class SokraticSource(PresentationSource):
             self.logger.debug("Re-click download button after closing popup")
             await download_button.click()
 
+        await self._save_generation_screenshot(page, save_path, 0, f"after_download_click_{doc_format}")
+
         async with page.expect_download() as download_info:
             self.logger.debug("Click download format button")
             await page.locator(
