@@ -430,6 +430,19 @@ class SokraticSource(PresentationSource):
 
         return file_path
 
+    async def _close_popup_if_visible(self, page: Page, popup_locator, timeout: int = 5000) -> bool:
+        try:
+            await popup_locator.wait_for(state="visible", timeout=timeout)
+            self.logger.debug("Popup window detected, closing")
+            await page.locator(
+                "//div[@role='dialog']//button[contains(@class, '-top-2')]"
+            ).click()
+            await popup_locator.wait_for(state="hidden", timeout=5000)
+            return True
+        except PlaywrightTimeoutError:
+            self.logger.info("Popup window not detected, continue")
+            return False
+
     async def _download_presentation(self, doc_format: str, save_path: str, file_stem: str) -> str:
         if not os.path.exists(save_path):
             os.makedirs(save_path)
@@ -441,11 +454,15 @@ class SokraticSource(PresentationSource):
             "//div[@role='dialog'][.//h2[normalize-space()='Пользователь']]"
         )
 
-        self.logger.debug("Click download button")
+        download_button = page.locator("//button[normalize-space(.)='Скачать']")
 
-        await page.locator("//button[normalize-space(.)='Скачать']").click(
-            timeout=self.generation_timeout
-        )
+        self.logger.debug("Click download button")
+        await download_button.click(timeout=self.generation_timeout)
+
+        popup_closed = await self._close_popup_if_visible(page, popup_locator)
+        if popup_closed:
+            self.logger.debug("Re-click download button after closing popup")
+            await download_button.click()
 
         async with page.expect_download() as download_info:
             self.logger.debug("Click download format button")
@@ -453,18 +470,7 @@ class SokraticSource(PresentationSource):
                 f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
             ).click()
 
-        try:
-            await popup_locator.wait_for(state="visible", timeout=5000)
-
-            self.logger.debug("Popup window detected after download, closing")
-
-            await page.locator(
-                "//div[@role='dialog']//button[contains(@class, '-top-2')]"
-            ).click()
-
-            await popup_locator.wait_for(state="hidden", timeout=5000)
-        except PlaywrightTimeoutError:
-            self.logger.info("Popup window not detected after download, continue")
+        await self._close_popup_if_visible(page, popup_locator)
 
         download = await download_info.value
         ext = os.path.splitext(download.suggested_filename)[1]
