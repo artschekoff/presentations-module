@@ -39,6 +39,7 @@ class SokraticSource(PresentationSource):
         details_prompt: str | None = None,
         playwright_default_timeout: int | None = None,
         save_screenshots: bool = True,
+        site_throttle_delay_ms: float = 5000,
     ) -> None:
         self.chrome = playwright.chromium
         self.browser = None
@@ -52,6 +53,7 @@ class SokraticSource(PresentationSource):
         self.generation_timeout = generation_timeout
         self.playwright_default_timeout = playwright_default_timeout
         self.save_screenshots = save_screenshots
+        self.site_throttle_delay_ms = site_throttle_delay_ms
 
     def _ensure_assets_dir(self) -> None:
         os.makedirs(self.assets_dir, exist_ok=True)
@@ -173,7 +175,7 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Wait for creation modal")
         await page.locator(
             '//h2[contains(normalize-space(), "Создать презентацию")]'
-        ).wait_for(timeout=5000)
+        ).wait_for(timeout=self.playwright_default_timeout)
 
         self.logger.debug("Fill topic")
         await page.locator('//textarea[@name="topic"]').type(topic)
@@ -338,7 +340,7 @@ class SokraticSource(PresentationSource):
 
         await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
 
-        await page.locator("//div[@role='dialog']").wait_for(timeout=10000)
+        await page.locator("//div[@role='dialog']").wait_for(timeout=self.playwright_default_timeout)
 
         self._ensure_assets_dir()
         screenshot_dir = generation_dir or self.assets_dir
@@ -383,7 +385,7 @@ class SokraticSource(PresentationSource):
         self.logger.debug("Wait for auth success")
         await page.wait_for_url(
             f"{self.url}/ru?auth-success=true",
-            timeout=float(os.environ["SITE_THROTTLE_DELAY_MS"]),
+            timeout=self.site_throttle_delay_ms,
         )
 
         # await page.screenshot(path=os.path.join(generation_dir, "sokratic_auth_2.png"))
@@ -404,8 +406,7 @@ class SokraticSource(PresentationSource):
             timeout=self.generation_timeout
         )
 
-        # wait for 5 seconds
-        await page.wait_for_timeout(float(os.environ["SITE_THROTTLE_DELAY_MS"]))
+        await page.wait_for_timeout(self.site_throttle_delay_ms)
 
         await page.locator("//button[normalize-space(.)='Текст выступления']").click(
             timeout=self.generation_timeout
@@ -454,10 +455,13 @@ class SokraticSource(PresentationSource):
 
         try:
             await popup_locator.wait_for(state="visible", timeout=5000)
+
             self.logger.debug("Popup window detected after download, closing")
+
             await page.locator(
                 "//div[@role='dialog']//button[contains(@class, '-top-2')]"
             ).click()
+
             await popup_locator.wait_for(state="hidden", timeout=5000)
         except PlaywrightTimeoutError:
             self.logger.info("Popup window not detected after download, continue")
@@ -486,12 +490,14 @@ async def generate_presentation(
     generation_timeout: int = GENERATION_TIMEOUT,
     generation_id: str | None = None,
     logger: logging.Logger | None = None,
+    site_throttle_delay_ms: float = float(os.environ.get("SITE_THROTTLE_DELAY_MS", 5000)),
 ) -> AsyncIterator[ProgressPayload]:
     logger = logger or logging.getLogger("sokratic_source")
     source = SokraticSource(
         playwright,
         logger=logger,
         generation_timeout=generation_timeout,
+        site_throttle_delay_ms=site_throttle_delay_ms,
     )
 
     try:
