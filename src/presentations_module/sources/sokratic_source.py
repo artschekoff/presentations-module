@@ -456,6 +456,8 @@ class SokraticSource(PresentationSource):
 
         download_button = page.locator("//button[normalize-space(.)='Скачать']")
 
+        await self._save_generation_screenshot(page, save_path, 0, f"before_download_{doc_format}")
+
         self.logger.debug("Click download button")
         await download_button.click(timeout=self.generation_timeout)
 
