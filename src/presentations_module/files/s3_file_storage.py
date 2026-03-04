@@ -1,5 +1,6 @@
 from contextlib import AbstractAsyncContextManager
 from typing import Any
+from urllib.parse import urlparse
 
 from .file_storage import FileStorage
 
@@ -26,6 +27,9 @@ class S3FileStorage(FileStorage):
     ) -> None:
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        self._region_name = region_name
+        self._aws_access_key_id = aws_access_key_id
+        self._aws_secret_access_key = aws_secret_access_key
         self._session = aioboto3.Session(
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key,
@@ -60,3 +64,25 @@ class S3FileStorage(FileStorage):
         async with self._client() as s3:
             await s3.upload_file(local_path, self.bucket, dest_path)
         return f"s3://{self.bucket}/{dest_path}"
+
+    def s3_presigned_redirect(self, s3_uri: str, expires_in: int = 3600) -> str:
+        """Generate and return a presigned S3 URL."""
+        import boto3
+
+        parsed = urlparse(s3_uri)
+        bucket = parsed.netloc
+        key = parsed.path.lstrip("/")
+
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=self._endpoint_url,
+            aws_access_key_id=self._aws_access_key_id,
+            aws_secret_access_key=self._aws_secret_access_key,
+            region_name=self._region_name,
+            verify=self._verify_ssl,
+        )
+        return s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
