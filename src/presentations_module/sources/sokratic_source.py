@@ -468,33 +468,74 @@ class SokraticSource(PresentationSource):
         )
 
         download_button = page.locator("//button[normalize-space(.)='Скачать']")
+        format_locator = page.locator(
+            f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
+        )
+        menu_locator = page.locator(
+            f"//div[@role='menu'][.//div[@role='menuitem'][normalize-space(.)='{doc_format}']]"
+        )
 
-        await self._save_generation_screenshot(page, save_path, 0, f"before_download_{doc_format}")
+        max_attempts = 3
+        last_error: Exception | None = None
+        download_info = None
+        menu_timeout = self.playwright_default_timeout or 10000
 
-        self.logger.debug("Click download button")
-        await download_button.click(timeout=self.generation_timeout)
-
-        popup_closed = await self._close_popup_if_visible(page, popup_locator)
-        if popup_closed:
-            self.logger.debug("Re-click download button after closing popup")
-            await download_button.click()
-
-        await self._save_generation_screenshot(page, save_path, 0, f"after_download_click_{doc_format}")
-
-        try:
-            async with page.expect_download(timeout=self.generation_timeout) as download_info:
-                self.logger.debug("Click download format button")
-                await page.locator(
-                    f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
-                ).click(no_wait_after=True)
-        except PlaywrightTimeoutError:
-            self.logger.error(
-                "Download event not received after selecting format '%s'. Current URL: %s",
-                doc_format,
-                page.url,
+        for attempt in range(1, max_attempts + 1):
+            await self._save_generation_screenshot(
+                page, save_path, 0, f"before_download_{doc_format}_attempt_{attempt}"
             )
-            await self._save_generation_screenshot(page, save_path, 0, f"download_timeout_{doc_format}")
-            raise
+            self.logger.debug(
+                "Click download button (attempt %s/%s)", attempt, max_attempts
+            )
+            await download_button.click(timeout=self.generation_timeout)
+
+            popup_closed = await self._close_popup_if_visible(page, popup_locator)
+            if popup_closed:
+                self.logger.debug("Re-open download menu after closing popup")
+                await download_button.click(timeout=self.generation_timeout)
+
+            await menu_locator.wait_for(state="visible", timeout=menu_timeout)
+            await format_locator.wait_for(state="visible", timeout=menu_timeout)
+            await self._save_generation_screenshot(
+                page, save_path, 0, f"menu_open_{doc_format}_attempt_{attempt}"
+            )
+
+            click_kwargs: dict[str, bool] = {"no_wait_after": True}
+            if attempt == max_attempts:
+                click_kwargs["force"] = True
+
+            try:
+                async with page.expect_download(timeout=self.generation_timeout) as download_info:
+                    self.logger.debug(
+                        "Click download format '%s' (attempt %s/%s)",
+                        doc_format,
+                        attempt,
+                        max_attempts,
+                    )
+                    await format_locator.click(**click_kwargs)
+                break
+            except PlaywrightTimeoutError as exc:
+                last_error = exc
+                self.logger.warning(
+                    "Download event not received for format '%s' on attempt %s/%s. URL: %s",
+                    doc_format,
+                    attempt,
+                    max_attempts,
+                    page.url,
+                )
+                await self._save_generation_screenshot(
+                    page, save_path, 0, f"download_timeout_{doc_format}_attempt_{attempt}"
+                )
+
+        if download_info is None:
+            self.logger.error(
+                "Failed to download format '%s' after %s attempts",
+                doc_format,
+                max_attempts,
+            )
+            raise RuntimeError(
+                f"Download event not received for format '{doc_format}' after {max_attempts} attempts"
+            ) from last_error
 
         await self._close_popup_if_visible(page, popup_locator)
 
