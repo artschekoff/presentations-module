@@ -5,7 +5,13 @@ import tempfile
 from typing import AsyncIterator
 import uuid
 
-from playwright.async_api import Playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import (
+    Playwright,
+    Browser,
+    BrowserContext,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from .download_format import DownloadFormat
 from .presentation_source import PresentationSource
@@ -30,6 +36,7 @@ GRADE_MAPPING = {
 
 class SokraticSource(PresentationSource):
     browser: Browser | None
+    context: BrowserContext | None
     page: Page | None
 
     def __init__(
@@ -46,6 +53,7 @@ class SokraticSource(PresentationSource):
     ) -> None:
         self.chrome = playwright.chromium
         self.browser = None
+        self.context = None
         self.url = "https://sokratic.ru"
         self.details_prompt = details_prompt or \
             "презентация на школьный урок по предмету {0} для {1} класса"
@@ -79,9 +87,13 @@ class SokraticSource(PresentationSource):
 
     async def init_async(self, headless: bool = False):
         if not self.is_init:
-            self.browser = await self.chrome.launch(headless=headless)
+            self.browser = await self.chrome.launch(
+                headless=headless,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
             self.is_init = True
-            self.page = await self.browser.new_page(
+            self.context = await self.browser.new_context(
+                accept_downloads=True,
                 viewport={"width": 1280, "height": 720},
                 locale="ru-RU",
                 timezone_id="Europe/Moscow",
@@ -91,6 +103,7 @@ class SokraticSource(PresentationSource):
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
             )
+            self.page = await self.context.new_page()
             if self.playwright_default_timeout is not None:
                 self.page.set_default_timeout(self.playwright_default_timeout)
 
@@ -107,6 +120,9 @@ class SokraticSource(PresentationSource):
         if self.page:
             await self.page.close()
             self.page = None
+        if self.context:
+            await self.context.close()
+            self.context = None
         if self.browser:
             await self.browser.close()
             self.is_init = False
@@ -465,11 +481,20 @@ class SokraticSource(PresentationSource):
 
         await self._save_generation_screenshot(page, save_path, 0, f"after_download_click_{doc_format}")
 
-        async with page.expect_download() as download_info:
-            self.logger.debug("Click download format button")
-            await page.locator(
-                f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
-            ).click()
+        try:
+            async with page.expect_download(timeout=self.generation_timeout) as download_info:
+                self.logger.debug("Click download format button")
+                await page.locator(
+                    f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
+                ).click(no_wait_after=True)
+        except PlaywrightTimeoutError:
+            self.logger.error(
+                "Download event not received after selecting format '%s'. Current URL: %s",
+                doc_format,
+                page.url,
+            )
+            await self._save_generation_screenshot(page, save_path, 0, f"download_timeout_{doc_format}")
+            raise
 
         await self._close_popup_if_visible(page, popup_locator)
 

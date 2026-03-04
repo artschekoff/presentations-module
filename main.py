@@ -94,7 +94,9 @@ async def run_presentation_task(
             storage=_create_s3_storage(),
         )
 
-        await source.init_async(headless=False)
+        await source.init_async(
+            headless=os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
+        )
 
         generation_id = uuid.uuid4().hex
         generation_dir = await source._ensure_generation_dir(generation_id)
