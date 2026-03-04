@@ -98,7 +98,11 @@ class SokraticSource(PresentationSource):
             return None
         filename = f"{step_index + 1:02d}_{stage}.png"
         key = self.storage.build_path(generation_dir, filename)
-        data = await page.screenshot()
+        try:
+            data = await page.screenshot()
+        except PlaywrightTimeoutError:
+            logging.warning("Screenshot timed out for step %d (%s), skipping", step_index + 1, stage)
+            return None
         return await self.storage.save_bytes(key, data)
 
     def _append_browser_log(self, level: str, message: str) -> None:
