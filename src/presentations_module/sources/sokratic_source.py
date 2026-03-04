@@ -487,12 +487,30 @@ class SokraticSource(PresentationSource):
             self.logger.debug(
                 "Click download button (attempt %s/%s)", attempt, max_attempts
             )
+            await self._save_generation_screenshot(
+                page, save_path, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
+            )
             await download_button.click(timeout=self.generation_timeout)
+            await self._save_generation_screenshot(
+                page, save_path, 0, f"after_click_download_{doc_format}_attempt_{attempt}"
+            )
 
             popup_closed = await self._close_popup_if_visible(page, popup_locator)
             if popup_closed:
                 self.logger.debug("Re-open download menu after closing popup")
+                await self._save_generation_screenshot(
+                    page,
+                    save_path,
+                    0,
+                    f"before_reopen_download_menu_{doc_format}_attempt_{attempt}",
+                )
                 await download_button.click(timeout=self.generation_timeout)
+                await self._save_generation_screenshot(
+                    page,
+                    save_path,
+                    0,
+                    f"after_reopen_download_menu_{doc_format}_attempt_{attempt}",
+                )
 
             await menu_locator.wait_for(state="visible", timeout=menu_timeout)
             await format_locator.wait_for(state="visible", timeout=menu_timeout)
@@ -512,7 +530,19 @@ class SokraticSource(PresentationSource):
                         attempt,
                         max_attempts,
                     )
+                    await self._save_generation_screenshot(
+                        page,
+                        save_path,
+                        0,
+                        f"before_click_download_format_{doc_format}_attempt_{attempt}",
+                    )
                     await format_locator.click(**click_kwargs)
+                    await self._save_generation_screenshot(
+                        page,
+                        save_path,
+                        0,
+                        f"after_click_download_format_{doc_format}_attempt_{attempt}",
+                    )
                 break
             except PlaywrightTimeoutError as exc:
                 last_error = exc
