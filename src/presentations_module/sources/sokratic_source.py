@@ -49,6 +49,7 @@ class SokraticSource(PresentationSource):
         details_prompt: str | None = None,
         playwright_default_timeout: int | None = None,
         save_screenshots: bool = True,
+        save_logs: bool = False,
         site_throttle_delay_ms: float = 5000,
         storage: FileStorage | None = None,
     ) -> None:
@@ -65,6 +66,7 @@ class SokraticSource(PresentationSource):
         self.generation_timeout = generation_timeout
         self.playwright_default_timeout = playwright_default_timeout
         self.save_screenshots = save_screenshots
+        self.save_logs = save_logs
         self.site_throttle_delay_ms = site_throttle_delay_ms
         self.storage = storage or LocalFileStorage()
         self._active_generation_dir: str | None = None
@@ -90,6 +92,8 @@ class SokraticSource(PresentationSource):
         return await self.storage.save_bytes(key, data)
 
     def _append_browser_log(self, level: str, message: str) -> None:
+        if not self.save_logs:
+            return
         if not self._active_generation_dir:
             return
         timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -155,6 +159,8 @@ class SokraticSource(PresentationSource):
             self._append_browser_log("preloader-state", f"{label}: failed to evaluate ({exc})")
 
     async def _flush_browser_logs(self, generation_dir: str | None = None) -> str | None:
+        if not self.save_logs:
+            return None
         target_dir = generation_dir or self._active_generation_dir
         if not target_dir:
             return None
@@ -787,6 +793,7 @@ async def generate_presentation(
         playwright,
         logger=logger,
         generation_timeout=generation_timeout,
+        save_logs=os.environ.get("SAVE_LOGS", "false").lower() == "true",
         site_throttle_delay_ms=site_throttle_delay_ms,
     )
 
