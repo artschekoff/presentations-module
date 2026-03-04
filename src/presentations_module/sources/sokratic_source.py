@@ -114,7 +114,9 @@ class SokraticSource(PresentationSource):
                         '[class*="preloader"]',
                         '[class*="loader"]',
                         '[class*="loading"]',
-                        '[data-testid*="loader"]'
+                        '[data-testid*="loader"]',
+                        'div[data-state="open"][aria-hidden="true"][data-aria-hidden="true"][class*="inset-0"]',
+                        '[class*="bg-black/80"]'
                     ];
                     const vw = window.innerWidth || document.documentElement.clientWidth;
                     const vh = window.innerHeight || document.documentElement.clientHeight;
@@ -576,7 +578,9 @@ class SokraticSource(PresentationSource):
                         '[class*="preloader"]',
                         '[class*="loader"]',
                         '[class*="loading"]',
-                        '[data-testid*="loader"]'
+                        '[data-testid*="loader"]',
+                        'div[data-state="open"][aria-hidden="true"][data-aria-hidden="true"][class*="inset-0"]',
+                        '[class*="bg-black/80"]'
                     ];
                     const vw = window.innerWidth || document.documentElement.clientWidth;
                     const vh = window.innerHeight || document.documentElement.clientHeight;
@@ -650,7 +654,29 @@ class SokraticSource(PresentationSource):
             await self._save_generation_screenshot(
                 page, save_path, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
             )
-            await download_button.click(timeout=self.generation_timeout)
+            try:
+                await download_button.click(timeout=menu_timeout)
+            except PlaywrightTimeoutError as exc:
+                last_error = exc
+                await self._log_download_diag(
+                    page,
+                    f"{doc_format} attempt {attempt}/{max_attempts}: download button click timeout",
+                    flush=True,
+                )
+                self.logger.warning(
+                    "Failed to click download button for format '%s' on attempt %s/%s. URL: %s",
+                    doc_format,
+                    attempt,
+                    max_attempts,
+                    page.url,
+                )
+                await self._save_generation_screenshot(
+                    page,
+                    save_path,
+                    0,
+                    f"download_button_click_timeout_{doc_format}_attempt_{attempt}",
+                )
+                continue
             await self._log_download_diag(
                 page, f"{doc_format} attempt {attempt}/{max_attempts}: after click download button"
             )
@@ -671,7 +697,7 @@ class SokraticSource(PresentationSource):
                     0,
                     f"before_reopen_download_menu_{doc_format}_attempt_{attempt}",
                 )
-                await download_button.click(timeout=self.generation_timeout)
+                await download_button.click(timeout=menu_timeout)
                 await self._save_generation_screenshot(
                     page,
                     save_path,
