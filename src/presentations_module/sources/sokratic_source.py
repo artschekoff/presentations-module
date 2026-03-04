@@ -2,6 +2,7 @@ import logging
 import os
 import random
 import tempfile
+from datetime import datetime, timezone
 from typing import AsyncIterator
 import uuid
 
@@ -66,6 +67,8 @@ class SokraticSource(PresentationSource):
         self.save_screenshots = save_screenshots
         self.site_throttle_delay_ms = site_throttle_delay_ms
         self.storage = storage or LocalFileStorage()
+        self._active_generation_dir: str | None = None
+        self._browser_log_lines: list[str] = []
 
     async def _ensure_assets_dir(self) -> None:
         await self.storage.makedirs(self.assets_dir)
@@ -78,12 +81,88 @@ class SokraticSource(PresentationSource):
     async def _save_generation_screenshot(
         self, page: Page, generation_dir: str, step_index: int, stage: str
     ) -> str | None:
+        await self._flush_browser_logs(generation_dir)
         if not self.save_screenshots:
             return None
         filename = f"{step_index + 1:02d}_{stage}.png"
         key = self.storage.build_path(generation_dir, filename)
         data = await page.screenshot()
         return await self.storage.save_bytes(key, data)
+
+    def _append_browser_log(self, level: str, message: str) -> None:
+        if not self._active_generation_dir:
+            return
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        for line in message.splitlines() or [""]:
+            self._browser_log_lines.append(f"{timestamp} [{level}] {line}")
+
+    async def _log_download_diag(self, page: Page, message: str, *, flush: bool = False) -> None:
+        self._append_browser_log("download-diag", message)
+        if flush:
+            await self._flush_browser_logs()
+
+    async def _log_preloader_state(self, page: Page, label: str) -> None:
+        try:
+            state = await page.evaluate(
+                """() => {
+                    const selectors = [
+                        '[aria-busy="true"]',
+                        '[class*="preloader"]',
+                        '[class*="loader"]',
+                        '[class*="loading"]',
+                        '[data-testid*="loader"]'
+                    ];
+                    const vw = window.innerWidth || document.documentElement.clientWidth;
+                    const vh = window.innerHeight || document.documentElement.clientHeight;
+                    const isVisible = (el) => {
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') return false;
+                        if (parseFloat(style.opacity || '1') === 0) return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    };
+                    const out = [];
+                    const candidates = document.querySelectorAll(selectors.join(','));
+                    for (const el of candidates) {
+                        if (!isVisible(el)) continue;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        const fullCover = rect.width >= vw * 0.8 && rect.height >= vh * 0.6;
+                        const fixedLike = style.position === 'fixed' || style.position === 'absolute';
+                        out.push({
+                            tag: el.tagName.toLowerCase(),
+                            id: el.id || '',
+                            className: (el.className || '').toString().slice(0, 200),
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height),
+                            position: style.position,
+                            zIndex: style.zIndex || '',
+                            fullCover,
+                            blocking: fullCover && fixedLike
+                        });
+                    }
+                    return {
+                        url: window.location.href,
+                        viewport: `${vw}x${vh}`,
+                        visibleCandidates: out.length,
+                        blockingCandidates: out.filter((x) => x.blocking).length,
+                        topCandidates: out.slice(0, 5),
+                    };
+                }"""
+            )
+            self._append_browser_log("preloader-state", f"{label}: {state}")
+        except Exception as exc:  # pylint: disable=broad-except
+            self._append_browser_log("preloader-state", f"{label}: failed to evaluate ({exc})")
+
+    async def _flush_browser_logs(self, generation_dir: str | None = None) -> str | None:
+        target_dir = generation_dir or self._active_generation_dir
+        if not target_dir:
+            return None
+        log_key = self.storage.build_path(target_dir, "log.txt")
+        content = "\n".join(self._browser_log_lines)
+        if content:
+            content += "\n"
+        return await self.storage.save_text(log_key, content)
 
     async def init_async(self, headless: bool = False):
         if not self.is_init:
@@ -104,6 +183,23 @@ class SokraticSource(PresentationSource):
                 ),
             )
             self.page = await self.context.new_page()
+            self.page.on(
+                "console",
+                lambda msg: self._append_browser_log(
+                    f"console:{msg.type}", msg.text
+                ),
+            )
+            self.page.on(
+                "pageerror",
+                lambda exc: self._append_browser_log("pageerror", str(exc)),
+            )
+            self.page.on(
+                "requestfailed",
+                lambda req: self._append_browser_log(
+                    "requestfailed",
+                    f"{req.method} {req.url} - {req.failure}",
+                ),
+            )
             if self.playwright_default_timeout is not None:
                 self.page.set_default_timeout(self.playwright_default_timeout)
 
@@ -146,6 +242,9 @@ class SokraticSource(PresentationSource):
         if generation_id is None:
             generation_id = uuid.uuid4().hex
         generation_dir = await self._ensure_generation_dir(generation_id)
+        self._active_generation_dir = generation_dir
+        self._browser_log_lines = []
+        await self._flush_browser_logs(generation_dir)
 
         _formats = (
             set(formats_to_download) if formats_to_download is not None else set(DownloadFormat)
@@ -351,6 +450,7 @@ class SokraticSource(PresentationSource):
         ):
             files.append(path)
         yield report_progress("done", files=list(files))
+        await self._flush_browser_logs(generation_dir)
         self.logger.info("Presentation generation completed successfully")
 
     async def authenticate(self, login: str, password: str, generation_dir: str | None = None) -> None:
@@ -461,6 +561,7 @@ class SokraticSource(PresentationSource):
         self, page: Page, timeout: int | None = None
     ) -> None:
         wait_timeout = timeout or self.playwright_default_timeout or 10000
+        await self._log_preloader_state(page, f"before_wait timeout={wait_timeout}")
         try:
             await page.wait_for_function(
                 """() => {
@@ -496,8 +597,10 @@ class SokraticSource(PresentationSource):
                 }""",
                 timeout=wait_timeout,
             )
+            await self._log_preloader_state(page, "after_wait success")
         except PlaywrightTimeoutError:
             self.logger.warning("Blocking preloader is still visible after %s ms", wait_timeout)
+            await self._log_preloader_state(page, "after_wait timeout")
 
     async def _download_presentation(self, doc_format: str, save_path: str, file_stem: str) -> str:
         await self.storage.makedirs(save_path)
@@ -523,6 +626,10 @@ class SokraticSource(PresentationSource):
         menu_timeout = self.playwright_default_timeout or 10000
 
         for attempt in range(1, max_attempts + 1):
+            await self._log_download_diag(
+                page,
+                f"{doc_format} attempt {attempt}/{max_attempts}: start url={page.url}",
+            )
             await self._wait_for_blocking_preloader_to_disappear(page, timeout=menu_timeout)
             await self._save_generation_screenshot(
                 page, save_path, 0, f"before_download_{doc_format}_attempt_{attempt}"
@@ -530,10 +637,18 @@ class SokraticSource(PresentationSource):
             self.logger.debug(
                 "Click download button (attempt %s/%s)", attempt, max_attempts
             )
+            await self._log_download_diag(
+                page, f"{doc_format} attempt {attempt}/{max_attempts}: before click download button"
+            )
+            await self._log_preloader_state(page, f"attempt {attempt} before_click_download_button")
             await self._save_generation_screenshot(
                 page, save_path, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
             )
             await download_button.click(timeout=self.generation_timeout)
+            await self._log_download_diag(
+                page, f"{doc_format} attempt {attempt}/{max_attempts}: after click download button"
+            )
+            await self._log_preloader_state(page, f"attempt {attempt} after_click_download_button")
             await self._save_generation_screenshot(
                 page, save_path, 0, f"after_click_download_{doc_format}_attempt_{attempt}"
             )
@@ -541,6 +656,9 @@ class SokraticSource(PresentationSource):
             popup_closed = await self._close_popup_if_visible(page, popup_locator)
             if popup_closed:
                 self.logger.debug("Re-open download menu after closing popup")
+                await self._log_download_diag(
+                    page, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed, reopening menu"
+                )
                 await self._save_generation_screenshot(
                     page,
                     save_path,
@@ -573,6 +691,11 @@ class SokraticSource(PresentationSource):
                         attempt,
                         max_attempts,
                     )
+                    await self._log_download_diag(
+                        page,
+                        f"{doc_format} attempt {attempt}/{max_attempts}: before click format",
+                    )
+                    await self._log_preloader_state(page, f"attempt {attempt} before_click_format")
                     await self._save_generation_screenshot(
                         page,
                         save_path,
@@ -580,6 +703,11 @@ class SokraticSource(PresentationSource):
                         f"before_click_download_format_{doc_format}_attempt_{attempt}",
                     )
                     await format_locator.click(**click_kwargs)
+                    await self._log_download_diag(
+                        page,
+                        f"{doc_format} attempt {attempt}/{max_attempts}: after click format",
+                    )
+                    await self._log_preloader_state(page, f"attempt {attempt} after_click_format")
                     await self._save_generation_screenshot(
                         page,
                         save_path,
@@ -589,6 +717,11 @@ class SokraticSource(PresentationSource):
                 break
             except PlaywrightTimeoutError as exc:
                 last_error = exc
+                await self._log_download_diag(
+                    page,
+                    f"{doc_format} attempt {attempt}/{max_attempts}: expect_download timeout",
+                    flush=True,
+                )
                 self.logger.warning(
                     "Download event not received for format '%s' on attempt %s/%s. URL: %s",
                     doc_format,
@@ -605,6 +738,9 @@ class SokraticSource(PresentationSource):
                 "Failed to download format '%s' after %s attempts",
                 doc_format,
                 max_attempts,
+            )
+            await self._log_download_diag(
+                page, f"{doc_format}: failed after {max_attempts} attempts", flush=True
             )
             raise RuntimeError(
                 f"Download event not received for format '{doc_format}' after {max_attempts} attempts"
