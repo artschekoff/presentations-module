@@ -677,7 +677,10 @@ class SokraticSource(PresentationSource):
                 page, save_path, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
             )
             try:
-                await download_button.click(timeout=menu_timeout)
+                await download_button.click(
+                    timeout=menu_timeout,
+                    force=True,
+                )
             except PlaywrightTimeoutError as exc:
                 last_error = exc
                 await self._log_download_diag(
@@ -719,7 +722,7 @@ class SokraticSource(PresentationSource):
                     0,
                     f"before_reopen_download_menu_{doc_format}_attempt_{attempt}",
                 )
-                await download_button.click(timeout=menu_timeout)
+                await download_button.click(timeout=menu_timeout, force=True)
                 await self._save_generation_screenshot(
                     page,
                     save_path,
