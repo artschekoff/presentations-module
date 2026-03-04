@@ -666,6 +666,15 @@ class SokraticSource(PresentationSource):
             await self._save_generation_screenshot(
                 page, save_path, 0, f"before_download_{doc_format}_attempt_{attempt}"
             )
+            popup_closed = await self._close_popup_if_visible(page, popup_locator)
+            if popup_closed:
+                self.logger.debug("Closed popup before clicking download button (attempt %s/%s)", attempt, max_attempts)
+                await self._log_download_diag(
+                    page, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed before download button click"
+                )
+                await self._save_generation_screenshot(
+                    page, save_path, 0, f"popup_closed_before_download_{doc_format}_attempt_{attempt}"
+                )
             self.logger.debug(
                 "Click download button (attempt %s/%s)", attempt, max_attempts
             )
