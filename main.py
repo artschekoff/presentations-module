@@ -84,13 +84,15 @@ async def run_presentation_task(
 
     try:
         apw = await async_playwright().start()
+        generation_id = uuid.uuid4().hex
 
         source = SokraticSource(
             apw,
             logger=logger,
-            assets_dir=os.getenv("ASSETS_DIR", "./assets/presentations"),
-            generation_timeout=int(os.environ["PRESENTATIONS_GENERATION_TIMEOUT_MS"]),
+            generation_dir=os.getenv("PRESENTATIONS_DIR", "./assets/presentations"),
+            generation_timeout=int(os.getenv("PRESENTATIONS_GENERATION_TIMEOUT_MS", "600000")),
             playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
+            site_throttle_delay_ms=float(os.getenv("SITE_THROTTLE_DELAY_MS", "5000")),
             save_screenshots=os.environ.get("SAVE_SCREENSHOTS", "true").lower() == "true",
             save_logs=os.environ.get("SAVE_LOGS", "false").lower() == "true",
             storage=_create_s3_storage(),
@@ -100,25 +102,22 @@ async def run_presentation_task(
             headless=os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
         )
 
-        generation_id = uuid.uuid4().hex
-        generation_dir = await source._ensure_generation_dir(generation_id)
-
         await source.authenticate(
             login=os.environ["SOKRATIC_USERNAME"],
             password=os.environ["SOKRATIC_PASSWORD"],
-            generation_dir=generation_dir,
+            generation_id=generation_id,
         )
 
         file_paths: list[str] = []
         async for update in source.generate_presentation(
+            generation_id=generation_id,
             topic=task.topic,
             language=task.language,
             grade=task.grade,
             subject=task.subject,
             slides_amount=task.slides_amount,
             author=task.author,
-            formats_to_download=[DownloadFormat.POWERPOINT, DownloadFormat.TEXT],
-            generation_id=generation_id,
+            formats_to_download=[DownloadFormat.POWERPOINT, DownloadFormat.PDF, DownloadFormat.TEXT],
         ):
             if update.get("stage") == "done":
                 file_paths = list(update.get("files", []))

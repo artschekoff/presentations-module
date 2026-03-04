@@ -4,13 +4,14 @@ import random
 import tempfile
 from datetime import datetime, timezone
 from typing import AsyncIterator
-import uuid
+from urllib.parse import urlparse
 
 from playwright.async_api import (
     Playwright,
     Browser,
     BrowserContext,
     Page,
+    Route,
     TimeoutError as PlaywrightTimeoutError,
 )
 
@@ -18,8 +19,6 @@ from .download_format import DownloadFormat
 from .presentation_source import PresentationSource
 from ..files import FileStorage, LocalFileStorage
 from ..core.progress_payload import ProgressPayload
-
-GENERATION_TIMEOUT = 1000 * 60 * 10  # 10 minutes
 
 GRADE_MAPPING = {
     "1": "Младшая школа",
@@ -35,6 +34,20 @@ GRADE_MAPPING = {
     "11": "Старшая школа",
 }
 
+
+class GenerationLoggerAdapter(logging.LoggerAdapter):
+    def __init__(self, logger: logging.Logger) -> None:
+        super().__init__(logger, {})
+        self._generation_id: str | None = None
+
+    def set_generation_id(self, generation_id: str) -> None:
+        self._generation_id = generation_id
+
+    def process(self, msg, kwargs):
+        if self._generation_id:
+            return f"[generation_id={self._generation_id}] {msg}", kwargs
+        return msg, kwargs
+
 class SokraticSource(PresentationSource):
     browser: Browser | None
     context: BrowserContext | None
@@ -44,8 +57,8 @@ class SokraticSource(PresentationSource):
         self,
         playwright: Playwright,
         logger: logging.Logger,
-        assets_dir: str = "./assets/presentations",
-        generation_timeout: int = GENERATION_TIMEOUT,
+        generation_dir: str,
+        generation_timeout: int,
         details_prompt: str | None = None,
         playwright_default_timeout: int | None = None,
         save_screenshots: bool = True,
@@ -57,12 +70,12 @@ class SokraticSource(PresentationSource):
         self.browser = None
         self.context = None
         self.url = "https://sokratic.ru"
+        super().__init__(generation_dir=generation_dir)
         self.details_prompt = details_prompt or \
             "презентация на школьный урок по предмету {0} для {1} класса"
         self.is_init = False
         self.page = None
-        self.logger = logger
-        self.assets_dir = assets_dir
+        self.logger = GenerationLoggerAdapter(logger)
         self.generation_timeout = generation_timeout
         self.playwright_default_timeout = playwright_default_timeout
         self.save_screenshots = save_screenshots
@@ -72,11 +85,8 @@ class SokraticSource(PresentationSource):
         self._active_generation_dir: str | None = None
         self._browser_log_lines: list[str] = []
 
-    async def _ensure_assets_dir(self) -> None:
-        await self.storage.makedirs(self.assets_dir)
-
     async def _ensure_generation_dir(self, generation_id: str) -> str:
-        generation_dir = self.storage.build_path(generation_id)
+        generation_dir = self.storage.build_path(self.generation_dir, generation_id)
         await self.storage.makedirs(generation_dir)
         return generation_dir
 
@@ -211,6 +221,17 @@ class SokraticSource(PresentationSource):
             if self.playwright_default_timeout is not None:
                 self.page.set_default_timeout(self.playwright_default_timeout)
 
+            async def _block_heavy_resources(route: Route) -> None:
+                allowed_hosts = {"sokratic.ru", "storage.yandexcloud.net"}
+                host = urlparse(route.request.url).hostname or ""
+                is_allowed = host in allowed_hosts or host.endswith(".sokratic.ru")
+                if not is_allowed or route.request.resource_type in {"image", "media", "font"}:
+                    await route.abort()
+                else:
+                    await route.continue_()
+
+            await self.page.route("**/*", _block_heavy_resources)
+
     def _check_init(self):
         if not self.is_init:
             raise RuntimeError("Browser is not initialized. Call 'init_async' first.")
@@ -233,6 +254,7 @@ class SokraticSource(PresentationSource):
 
     async def generate_presentation(
         self,
+        generation_id: str,
         topic: str,
         language: str,
         slides_amount: int,
@@ -241,15 +263,12 @@ class SokraticSource(PresentationSource):
         author: str | None = None,
         style_id: str | None = None,
         formats_to_download: list[DownloadFormat] | None = None,
-        generation_id: str | None = None,
     ) -> AsyncIterator[ProgressPayload]:
         self._check_init()
-        await self._ensure_assets_dir()
+        self.logger.set_generation_id(generation_id)
+        generation_dir = await self._ensure_generation_dir(generation_id)
         self.logger.info("Start presentation generation")
 
-        if generation_id is None:
-            generation_id = uuid.uuid4().hex
-        generation_dir = await self._ensure_generation_dir(generation_id)
         self._active_generation_dir = generation_dir
         self._browser_log_lines = []
         await self._flush_browser_logs(generation_dir)
@@ -461,9 +480,11 @@ class SokraticSource(PresentationSource):
         await self._flush_browser_logs(generation_dir)
         self.logger.info("Presentation generation completed successfully")
 
-    async def authenticate(self, login: str, password: str, generation_dir: str | None = None) -> None:
+    async def authenticate(self, login: str, password: str, generation_id: str) -> None:
         self._check_init()
         page = self._get_page()
+        self.logger.set_generation_id(generation_id)
+        generation_dir = await self._ensure_generation_dir(generation_id)
 
         self.logger.info("Open auth modal")
 
@@ -471,12 +492,9 @@ class SokraticSource(PresentationSource):
 
         await page.locator("//div[@role='dialog']").wait_for(timeout=self.playwright_default_timeout)
 
-        await self._ensure_assets_dir()
-        screenshot_dir = generation_dir or self.assets_dir
-
         # save screenshot here
         await self._save_generation_screenshot(
-            page, screenshot_dir, 0, "sokratic_auth_1"
+            page, generation_dir, 0, "sokratic_auth_1"
         )
 
         self.logger.debug("Locate email input")
@@ -508,7 +526,7 @@ class SokraticSource(PresentationSource):
         await submit_button.first.click()
 
         await self._save_generation_screenshot(
-            page, screenshot_dir, 1, "sokratic_auth_2"
+            page, generation_dir, 1, "sokratic_auth_2"
         )
 
         self.logger.debug("Wait for auth success")
@@ -711,10 +729,6 @@ class SokraticSource(PresentationSource):
                 page, save_path, 0, f"menu_open_{doc_format}_attempt_{attempt}"
             )
 
-            click_kwargs: dict[str, bool] = {"no_wait_after": True}
-            if attempt == max_attempts:
-                click_kwargs["force"] = True
-
             try:
                 async with page.expect_download(timeout=self.generation_timeout) as download_info:
                     self.logger.debug(
@@ -734,7 +748,10 @@ class SokraticSource(PresentationSource):
                         0,
                         f"before_click_download_format_{doc_format}_attempt_{attempt}",
                     )
-                    await format_locator.click(**click_kwargs)
+                    if attempt == max_attempts:
+                        await format_locator.click(no_wait_after=True, force=True)
+                    else:
+                        await format_locator.click(no_wait_after=True)
                     await self._log_download_diag(
                         page,
                         f"{doc_format} attempt {attempt}/{max_attempts}: after click format",
@@ -809,24 +826,23 @@ async def generate_presentation(
     author: str | None = None,
     style_id: str | None = None,
     formats_to_download: list[DownloadFormat] | None = None,
-    generation_timeout: int = GENERATION_TIMEOUT,
-    generation_id: str | None = None,
+    generation_id: str,
     logger: logging.Logger | None = None,
-    site_throttle_delay_ms: float = float(os.environ.get("SITE_THROTTLE_DELAY_MS", 5000)),
 ) -> AsyncIterator[ProgressPayload]:
     logger = logger or logging.getLogger("sokratic_source")
     source = SokraticSource(
         playwright,
         logger=logger,
-        generation_timeout=generation_timeout,
+        generation_dir=os.getenv("PRESENTATIONS_DIR", "./assets/presentations"),
+        generation_timeout=int(os.getenv("PRESENTATIONS_GENERATION_TIMEOUT_MS", "600000")),
         save_logs=os.environ.get("SAVE_LOGS", "false").lower() == "true",
-        site_throttle_delay_ms=site_throttle_delay_ms,
     )
 
     try:
         await source.init_async()
 
         async for update in source.generate_presentation(
+            generation_id=generation_id,
             topic=topic,
             language=language,
             slides_amount=slides_amount,
@@ -835,7 +851,6 @@ async def generate_presentation(
             author=author,
             style_id=style_id,
             formats_to_download=formats_to_download,
-            generation_id=generation_id,
         ):
             yield update
     finally:
