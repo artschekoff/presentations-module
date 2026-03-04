@@ -457,6 +457,48 @@ class SokraticSource(PresentationSource):
             self.logger.info("Popup window not detected, continue")
             return False
 
+    async def _wait_for_blocking_preloader_to_disappear(
+        self, page: Page, timeout: int | None = None
+    ) -> None:
+        wait_timeout = timeout or self.playwright_default_timeout or 10000
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const selectors = [
+                        '[aria-busy="true"]',
+                        '[class*="preloader"]',
+                        '[class*="loader"]',
+                        '[class*="loading"]',
+                        '[data-testid*="loader"]'
+                    ];
+                    const vw = window.innerWidth || document.documentElement.clientWidth;
+                    const vh = window.innerHeight || document.documentElement.clientHeight;
+                    const isVisible = (el) => {
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') return false;
+                        if (parseFloat(style.opacity || '1') === 0) return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    };
+                    const isBlocking = (el) => {
+                        if (!isVisible(el)) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        const fullCover = rect.width >= vw * 0.8 && rect.height >= vh * 0.6;
+                        const fixedLike = style.position === 'fixed' || style.position === 'absolute';
+                        return fullCover && fixedLike;
+                    };
+                    const candidates = document.querySelectorAll(selectors.join(','));
+                    for (const el of candidates) {
+                        if (isBlocking(el)) return false;
+                    }
+                    return true;
+                }""",
+                timeout=wait_timeout,
+            )
+        except PlaywrightTimeoutError:
+            self.logger.warning("Blocking preloader is still visible after %s ms", wait_timeout)
+
     async def _download_presentation(self, doc_format: str, save_path: str, file_stem: str) -> str:
         await self.storage.makedirs(save_path)
 
@@ -481,6 +523,7 @@ class SokraticSource(PresentationSource):
         menu_timeout = self.playwright_default_timeout or 10000
 
         for attempt in range(1, max_attempts + 1):
+            await self._wait_for_blocking_preloader_to_disappear(page, timeout=menu_timeout)
             await self._save_generation_screenshot(
                 page, save_path, 0, f"before_download_{doc_format}_attempt_{attempt}"
             )
