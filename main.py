@@ -89,6 +89,7 @@ async def run_presentation_task(
             apw,
             logger=logger,
             assets_dir=os.getenv("ASSETS_DIR", "./assets/presentations"),
+            generation_timeout=int(os.environ["PRESENTATIONS_GENERATION_TIMEOUT_MS"]),
             playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
             save_screenshots=os.environ.get("SAVE_SCREENSHOTS", "true").lower() == "true",
             save_logs=os.environ.get("SAVE_LOGS", "false").lower() == "true",
