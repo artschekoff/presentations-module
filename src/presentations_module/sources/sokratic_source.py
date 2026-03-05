@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import os
 import random
@@ -33,6 +34,14 @@ GRADE_MAPPING = {
     "10": "Старшая школа",
     "11": "Старшая школа",
 }
+
+
+@dataclasses.dataclass
+class _GenCtx:
+    """Per-generation context. Holds all state that differs between concurrent generations."""
+    page: Page
+    generation_dir: str
+    log_lines: list[str] = dataclasses.field(default_factory=list)
 
 
 class GenerationLoggerAdapter(logging.LoggerAdapter):
@@ -82,8 +91,6 @@ class SokraticSource(PresentationSource):
         self.save_logs = save_logs
         self.site_throttle_delay_ms = site_throttle_delay_ms
         self.storage = storage or LocalFileStorage()
-        self._active_generation_dir: str | None = None
-        self._browser_log_lines: list[str] = []
 
     async def _ensure_generation_dir(self, generation_id: str) -> str:
         generation_dir = self.storage.build_path(self.generation_dir, generation_id)
@@ -91,37 +98,35 @@ class SokraticSource(PresentationSource):
         return generation_dir
 
     async def _save_generation_screenshot(
-        self, page: Page, generation_dir: str, step_index: int, stage: str
+        self, ctx: _GenCtx, step_index: int, stage: str
     ) -> str | None:
-        await self._flush_browser_logs(generation_dir)
+        await self._flush_browser_logs(ctx)
         if not self.save_screenshots:
             return None
         filename = f"{step_index + 1:02d}_{stage}.png"
-        key = self.storage.build_path(generation_dir, filename)
+        key = self.storage.build_path(ctx.generation_dir, filename)
         try:
-            data = await page.screenshot()
+            data = await ctx.page.screenshot()
         except PlaywrightTimeoutError:
             logging.warning("Screenshot timed out for step %d (%s), skipping", step_index + 1, stage)
             return None
         return await self.storage.save_bytes(key, data)
 
-    def _append_browser_log(self, level: str, message: str) -> None:
+    def _append_browser_log(self, ctx: _GenCtx, level: str, message: str) -> None:
         if not self.save_logs:
-            return
-        if not self._active_generation_dir:
             return
         timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         for line in message.splitlines() or [""]:
-            self._browser_log_lines.append(f"{timestamp} [{level}] {line}")
+            ctx.log_lines.append(f"{timestamp} [{level}] {line}")
 
-    async def _log_download_diag(self, page: Page, message: str, *, flush: bool = False) -> None:
-        self._append_browser_log("download-diag", message)
+    async def _log_download_diag(self, ctx: _GenCtx, message: str, *, flush: bool = False) -> None:
+        self._append_browser_log(ctx, "download-diag", message)
         if flush:
-            await self._flush_browser_logs()
+            await self._flush_browser_logs(ctx)
 
-    async def _log_preloader_state(self, page: Page, label: str) -> None:
+    async def _log_preloader_state(self, ctx: _GenCtx, label: str) -> None:
         try:
-            state = await page.evaluate(
+            state = await ctx.page.evaluate(
                 """() => {
                     const selectors = [
                         '[aria-busy="true"]',
@@ -170,18 +175,15 @@ class SokraticSource(PresentationSource):
                     };
                 }"""
             )
-            self._append_browser_log("preloader-state", f"{label}: {state}")
+            self._append_browser_log(ctx, "preloader-state", f"{label}: {state}")
         except Exception as exc:  # pylint: disable=broad-except
-            self._append_browser_log("preloader-state", f"{label}: failed to evaluate ({exc})")
+            self._append_browser_log(ctx, "preloader-state", f"{label}: failed to evaluate ({exc})")
 
-    async def _flush_browser_logs(self, generation_dir: str | None = None) -> str | None:
+    async def _flush_browser_logs(self, ctx: _GenCtx) -> str | None:
         if not self.save_logs:
             return None
-        target_dir = generation_dir or self._active_generation_dir
-        if not target_dir:
-            return None
-        log_key = self.storage.build_path(target_dir, "log.txt")
-        content = "\n".join(self._browser_log_lines)
+        log_key = self.storage.build_path(ctx.generation_dir, "log.txt")
+        content = "\n".join(ctx.log_lines)
         if content:
             content += "\n"
         return await self.storage.save_text(log_key, content)
@@ -205,45 +207,12 @@ class SokraticSource(PresentationSource):
                 ),
             )
             self.page = await self.context.new_page()
-            self.page.on(
-                "console",
-                lambda msg: self._append_browser_log(
-                    f"console:{msg.type}", msg.text
-                ),
-            )
-            self.page.on(
-                "pageerror",
-                lambda exc: self._append_browser_log("pageerror", str(exc)),
-            )
-            self.page.on(
-                "requestfailed",
-                lambda req: self._append_browser_log(
-                    "requestfailed",
-                    f"{req.method} {req.url} - {req.failure}",
-                ),
-            )
             if self.playwright_default_timeout is not None:
                 self.page.set_default_timeout(self.playwright_default_timeout)
-
-            async def _block_heavy_resources(route: Route) -> None:
-                allowed_hosts = {"sokratic.ru", "storage.yandexcloud.net"}
-                host = urlparse(route.request.url).hostname or ""
-                is_allowed = host in allowed_hosts or host.endswith(".sokratic.ru")
-                if not is_allowed or route.request.resource_type in {"image", "media", "font"}:
-                    await route.abort()
-                else:
-                    await route.continue_()
-
-            await self.page.route("**/*", _block_heavy_resources)
 
     def _check_init(self):
         if not self.is_init:
             raise RuntimeError("Browser is not initialized. Call 'init_async' first.")
-
-    def _get_page(self) -> Page:
-        self._check_init()
-        assert self.page is not None
-        return self.page
 
     async def dispose_async(self):
         if self.page:
@@ -255,6 +224,25 @@ class SokraticSource(PresentationSource):
         if self.browser:
             await self.browser.close()
             self.is_init = False
+
+    async def _new_tab(self) -> Page:
+        """Open a new tab in the existing browser context with routing configured."""
+        assert self.context is not None
+        page = await self.context.new_page()
+        if self.playwright_default_timeout is not None:
+            page.set_default_timeout(self.playwright_default_timeout)
+
+        async def _block_heavy_resources(route: Route) -> None:
+            allowed_hosts = {"sokratic.ru", "storage.yandexcloud.net"}
+            host = urlparse(route.request.url).hostname or ""
+            is_allowed = host in allowed_hosts or host.endswith(".sokratic.ru")
+            if not is_allowed or route.request.resource_type in {"image", "media", "font"}:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await page.route("**/*", _block_heavy_resources)
+        return page
 
     async def generate_presentation(
         self,
@@ -273,9 +261,16 @@ class SokraticSource(PresentationSource):
         generation_dir = await self._ensure_generation_dir(generation_id)
         self.logger.info("Start presentation generation")
 
-        self._active_generation_dir = generation_dir
-        self._browser_log_lines = []
-        await self._flush_browser_logs(generation_dir)
+        tab = await self._new_tab()
+        await tab.goto(self.url)
+        self.logger.debug("Opened new tab for generation %s", generation_id)
+        ctx = _GenCtx(page=tab, generation_dir=generation_dir)
+
+        ctx.page.on("console", lambda msg: self._append_browser_log(ctx, f"console:{msg.type}", msg.text))
+        ctx.page.on("pageerror", lambda exc: self._append_browser_log(ctx, "pageerror", str(exc)))
+        ctx.page.on("requestfailed", lambda req: self._append_browser_log(ctx, "requestfailed", f"{req.method} {req.url} - {req.failure}"))
+
+        await self._flush_browser_logs(ctx)
 
         _formats = (
             set(formats_to_download) if formats_to_download is not None else set(DownloadFormat)
@@ -307,202 +302,205 @@ class SokraticSource(PresentationSource):
                 payload["files"] = files
             return payload
 
-        page = self._get_page()
+        try:
+            files: list[str] = []
 
-        files: list[str] = []
+            if path := await self._save_generation_screenshot(
+                ctx, steps.index("start"), "start"
+            ):
+                files.append(path)
+            yield report_progress("start", files=list(files))
 
-        if path := await self._save_generation_screenshot(
-            page, generation_dir, steps.index("start"), "start"
-        ):
-            files.append(path)
-        yield report_progress("start", files=list(files))
+            self.logger.debug("Click 'Create with AI' on landing page")
+            await ctx.page.locator(
+                '//button[contains(normalize-space(), "Создать с AI")]'
+            ).click()
 
-        self.logger.debug("Click 'Create with AI' on landing page")
-        await page.locator(
-            '//button[contains(normalize-space(), "Создать с AI")]'
-        ).click()
+            self.logger.debug("Wait for creation modal")
+            await ctx.page.locator(
+                '//h2[contains(normalize-space(), "Создать презентацию")]'
+            ).wait_for(timeout=self.playwright_default_timeout)
 
-        self.logger.debug("Wait for creation modal")
-        await page.locator(
-            '//h2[contains(normalize-space(), "Создать презентацию")]'
-        ).wait_for(timeout=self.playwright_default_timeout)
+            self.logger.debug("Fill topic")
+            await ctx.page.locator('//textarea[@name="topic"]').type(topic)
+            self.logger.debug("Select slides amount: %s", slides_amount)
+            await ctx.page.locator(
+                '//form//select[.//option[contains(normalize-space(), "20")]]'
+            ).select_option(str(slides_amount))
 
-        self.logger.debug("Fill topic")
-        await page.locator('//textarea[@name="topic"]').type(topic)
-        self.logger.debug("Select slides amount: %s", slides_amount)
-        await page.locator(
-            '//form//select[.//option[contains(normalize-space(), "20")]]'
-        ).select_option(str(slides_amount))
+            self.logger.debug("Select language: %s", language)
 
-        self.logger.debug("Select language: %s", language)
+            await ctx.page.locator("(//form//select)[2]").select_option(str(language))
 
-        await page.locator("(//form//select)[2]").select_option(str(language))
+            self.logger.debug("Open advanced settings")
+            await ctx.page.locator(
+                '//form//button[contains(normalize-space(), "Дополнительные настройки")]'
+            ).click()
 
-        self.logger.debug("Open advanced settings")
-        await page.locator(
-            '//form//button[contains(normalize-space(), "Дополнительные настройки")]'
-        ).click()
+            self.logger.debug("Open audience selector")
+            await ctx.page.locator(
+                '//button[contains(normalize-space(), "Выберите аудиторию")]'
+            ).click()
 
-        self.logger.debug("Open audience selector")
-        await page.locator(
-            '//button[contains(normalize-space(), "Выберите аудиторию")]'
-        ).click()
-
-        if grade not in GRADE_MAPPING:
-            raise ValueError(
-                f"Invalid grade: {grade}. Must be one of: {list(GRADE_MAPPING.keys())}"
-            )
-
-        self.logger.debug("Select audience: %s", grade)
-        audience_option = GRADE_MAPPING[grade]
-        await page.locator(
-            f'//div[@role="option" and normalize-space()="{audience_option}"]'
-        ).click()
-
-        self.logger.debug("Fill author")
-        await page.locator('//input[@name="author"]').type(author or "")
-        self.logger.debug("Save form")
-        await page.locator('//button[contains(normalize-space(), "Сохранить")]').click()
-
-        if path := await self._save_generation_screenshot(
-            page, generation_dir, steps.index("form_saved"), "form_saved"
-        ):
-            files.append(path)
-        yield report_progress("form_saved", files=list(files))
-
-        self.logger.debug("Open design gallery")
-        await page.locator(
-            '//button[contains(normalize-space(), "Смотреть все дизайны")]'
-        ).click()
-
-        styles_selector = (
-            "//div[@role='dialog']//h2[normalize-space()='Дизайны']"
-            "//..//..//div[contains(@class, 'group/item')]"
-        )
-
-        styles_count = await page.locator(styles_selector).count()
-        self.logger.debug("Found %s styles", styles_count)
-
-        if styles_count <= 0:
-            raise RuntimeError("No styles found in design gallery")
-
-        if style_id is None:
-            final_style_id = random.randint(0, styles_count - 1)
-        else:
-            try:
-                final_style_id = int(style_id)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("style_id must be a numeric index") from exc
-
-            if final_style_id < 0 or final_style_id >= styles_count:
+            if grade not in GRADE_MAPPING:
                 raise ValueError(
-                    f"style_id index out of range: {final_style_id} (styles_count={styles_count})"
+                    f"Invalid grade: {grade}. Must be one of: {list(GRADE_MAPPING.keys())}"
                 )
 
-        self.logger.debug("Select style: %s", final_style_id)
-        await page.locator(styles_selector).nth(int(final_style_id)).click()
+            self.logger.debug("Select audience: %s", grade)
+            audience_option = GRADE_MAPPING[grade]
+            await ctx.page.locator(
+                f'//div[@role="option" and normalize-space()="{audience_option}"]'
+            ).click()
 
-        if path := await self._save_generation_screenshot(
-            page, generation_dir, steps.index("style_selected"), "style_selected"
-        ):
-            files.append(path)
-        yield report_progress("style_selected", files=list(files))
+            self.logger.debug("Fill author")
+            await ctx.page.locator('//input[@name="author"]').type(author or "")
+            self.logger.debug("Save form")
+            await ctx.page.locator('//button[contains(normalize-space(), "Сохранить")]').click()
 
-        self.logger.debug("Start generation")
-        await page.locator(
-            '//form//button[contains(normalize-space(), "Создать с AI")]'
-        ).click()
+            if path := await self._save_generation_screenshot(
+                ctx, steps.index("form_saved"), "form_saved"
+            ):
+                files.append(path)
+            yield report_progress("form_saved", files=list(files))
 
-        if path := await self._save_generation_screenshot(
-            page, generation_dir, steps.index("generation_started"), "generation_started"
-        ):
-            files.append(path)
-        yield report_progress("generation_started", files=list(files))
+            self.logger.debug("Open design gallery")
+            await ctx.page.locator(
+                '//button[contains(normalize-space(), "Смотреть все дизайны")]'
+            ).click()
 
-        self.logger.debug("Wait for order page")
-        await page.wait_for_url(f"{self.url}/ru/orders/*", timeout=self.generation_timeout)
-
-        self.logger.debug("Specifying details for generation")
-        details_prompt_filled = self.details_prompt.format(subject, grade)
-        await page.locator('//form//textarea').type(details_prompt_filled)
-        await page.locator('//form//button[@type="submit"]').click()
-
-        pres_button = (
-            "//button[normalize-space(.)='Презентация']"
-            "[not(contains(@class,'text-transparent'))]"
-        )
-
-        self.logger.debug("Wait for presentation download button")
-        await page.locator(pres_button).wait_for(timeout=self.generation_timeout)
-
-        self.logger.debug("Open presentation download menu")
-        await page.locator(pres_button).click()
-
-        if DownloadFormat.POWERPOINT in _formats:
-            self.logger.info("Download PowerPoint")
-            files.append(
-                await self._download_presentation(
-                    doc_format="PowerPoint",
-                    save_path=generation_dir,
-                    file_stem=generation_id,
-                )
+            styles_selector = (
+                "//div[@role='dialog']//h2[normalize-space()='Дизайны']"
+                "//..//..//div[contains(@class, 'group/item')]"
             )
+
+            styles_count = await ctx.page.locator(styles_selector).count()
+            self.logger.debug("Found %s styles", styles_count)
+
+            if styles_count <= 0:
+                raise RuntimeError("No styles found in design gallery")
+
+            if style_id is None:
+                final_style_id = random.randint(0, styles_count - 1)
+            else:
+                try:
+                    final_style_id = int(style_id)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("style_id must be a numeric index") from exc
+
+                if final_style_id < 0 or final_style_id >= styles_count:
+                    raise ValueError(
+                        f"style_id index out of range: {final_style_id} (styles_count={styles_count})"
+                    )
+
+            self.logger.debug("Select style: %s", final_style_id)
+            await ctx.page.locator(styles_selector).nth(int(final_style_id)).click()
+
             if path := await self._save_generation_screenshot(
-                page, generation_dir, steps.index("downloaded_powerpoint"), "downloaded_powerpoint"
+                ctx, steps.index("style_selected"), "style_selected"
             ):
                 files.append(path)
-            yield report_progress("downloaded_powerpoint", files=list(files))
+            yield report_progress("style_selected", files=list(files))
 
-        if DownloadFormat.PDF in _formats:
-            self.logger.info("Download PDF")
-            files.append(
-                await self._download_presentation(
-                    doc_format="PDF",
-                    save_path=generation_dir,
-                    file_stem=generation_id,
-                )
+            self.logger.debug("Start generation")
+            await ctx.page.locator(
+                '//form//button[contains(normalize-space(), "Создать с AI")]'
+            ).click()
+
+            if path := await self._save_generation_screenshot(
+                ctx, steps.index("generation_started"), "generation_started"
+            ):
+                files.append(path)
+            yield report_progress("generation_started", files=list(files))
+
+            self.logger.debug("Wait for order page")
+            await ctx.page.wait_for_url(f"{self.url}/ru/orders/*", timeout=self.generation_timeout)
+
+            self.logger.debug("Specifying details for generation")
+            details_prompt_filled = self.details_prompt.format(subject, grade)
+            await ctx.page.locator('//form//textarea').type(details_prompt_filled)
+            await ctx.page.locator('//form//button[@type="submit"]').click()
+
+            pres_button = (
+                "//button[normalize-space(.)='Презентация']"
+                "[not(contains(@class,'text-transparent'))]"
             )
+
+            self.logger.debug("Wait for presentation download button")
+            await ctx.page.locator(pres_button).wait_for(timeout=self.generation_timeout)
+
+            self.logger.debug("Open presentation download menu")
+            await ctx.page.locator(pres_button).click()
+
+            if DownloadFormat.POWERPOINT in _formats:
+                self.logger.info("Download PowerPoint")
+                files.append(
+                    await self._download_presentation(
+                        ctx=ctx,
+                        doc_format="PowerPoint",
+                        file_stem=generation_id,
+                    )
+                )
+                if path := await self._save_generation_screenshot(
+                    ctx, steps.index("downloaded_powerpoint"), "downloaded_powerpoint"
+                ):
+                    files.append(path)
+                yield report_progress("downloaded_powerpoint", files=list(files))
+
+            if DownloadFormat.PDF in _formats:
+                self.logger.info("Download PDF")
+                files.append(
+                    await self._download_presentation(
+                        ctx=ctx,
+                        doc_format="PDF",
+                        file_stem=generation_id,
+                    )
+                )
+                if path := await self._save_generation_screenshot(
+                    ctx, steps.index("downloaded_pdf"), "downloaded_pdf"
+                ):
+                    files.append(path)
+                yield report_progress("downloaded_pdf", files=list(files))
+
+            if DownloadFormat.TEXT in _formats:
+                files.append(await self._download_text(ctx=ctx, file_stem=generation_id))
+                if path := await self._save_generation_screenshot(
+                    ctx, steps.index("downloaded_text"), "downloaded_text"
+                ):
+                    files.append(path)
+                yield report_progress("downloaded_text", files=list(files))
+
             if path := await self._save_generation_screenshot(
-                page, generation_dir, steps.index("downloaded_pdf"), "downloaded_pdf"
+                ctx, steps.index("done"), "done"
             ):
                 files.append(path)
-            yield report_progress("downloaded_pdf", files=list(files))
-
-        if DownloadFormat.TEXT in _formats:
-            files.append(await self._download_text(save_path=generation_dir, file_stem=generation_id))
-            if path := await self._save_generation_screenshot(
-                page, generation_dir, steps.index("downloaded_text"), "downloaded_text"
-            ):
-                files.append(path)
-            yield report_progress("downloaded_text", files=list(files))
-
-        if path := await self._save_generation_screenshot(
-            page, generation_dir, steps.index("done"), "done"
-        ):
-            files.append(path)
-        yield report_progress("done", files=list(files))
-        await self._flush_browser_logs(generation_dir)
-        self.logger.info("Presentation generation completed successfully")
+            yield report_progress("done", files=list(files))
+            await self._flush_browser_logs(ctx)
+            self.logger.info("Presentation generation completed successfully")
+        finally:
+            await tab.close()
+            self.logger.debug("Closed tab for generation %s", generation_id)
 
     async def authenticate(self, login: str, password: str, generation_id: str) -> None:
         self._check_init()
-        page = self._get_page()
+        assert self.page is not None
         self.logger.set_generation_id(generation_id)
         generation_dir = await self._ensure_generation_dir(generation_id)
+        auth_ctx = _GenCtx(page=self.page, generation_dir=generation_dir)
 
         self.logger.info("Open auth modal")
 
-        await page.goto(url=f"{self.url}/ru?auth-modal-open=true")
+        await self.page.goto(url=f"{self.url}/ru?auth-modal-open=true")
 
-        await page.locator("//div[@role='dialog']").wait_for(timeout=self.playwright_default_timeout)
+        await self.page.locator("//div[@role='dialog']").wait_for(timeout=self.playwright_default_timeout)
 
         # save screenshot here
         await self._save_generation_screenshot(
-            page, generation_dir, 0, "sokratic_auth_1"
+            auth_ctx, 0, "sokratic_auth_1"
         )
 
         self.logger.debug("Locate email input")
-        email_input = await page.query_selector("input[id='email']")
+        email_input = await self.page.query_selector("input[id='email']")
 
         if email_input is None:
             raise RuntimeError("Email input not found on Sokratic login page")
@@ -511,7 +509,7 @@ class SokraticSource(PresentationSource):
         await email_input.type(login)
 
         self.logger.debug("Locate password input")
-        password_input = await page.query_selector("input[id='password']")
+        password_input = await self.page.query_selector("input[id='password']")
 
         if password_input is None:
             raise RuntimeError("Password input not found on Sokratic login page")
@@ -520,9 +518,9 @@ class SokraticSource(PresentationSource):
         await password_input.type(password)
 
         form = (
-            page.locator("form")
-            .filter(has=page.locator("input#email"))
-            .filter(has=page.locator("input#password"))
+            self.page.locator("form")
+            .filter(has=self.page.locator("input#email"))
+            .filter(has=self.page.locator("input#password"))
         )
 
         self.logger.debug("Submit auth form")
@@ -530,23 +528,23 @@ class SokraticSource(PresentationSource):
         await submit_button.first.click()
 
         await self._save_generation_screenshot(
-            page, generation_dir, 1, "sokratic_auth_2"
+            auth_ctx, 1, "sokratic_auth_2"
         )
 
         self.logger.debug("Wait for auth success")
-        await page.wait_for_url(
+        await self.page.wait_for_url(
             f"{self.url}/ru?auth-success=true",
             timeout=self.site_throttle_delay_ms,
         )
 
         # await page.screenshot(path=os.path.join(generation_dir, "sokratic_auth_2.png"))
 
-    async def _download_text(self, save_path: str, file_stem: str) -> str:
-        await self.storage.makedirs(save_path)
+    async def _download_text(self, ctx: _GenCtx, file_stem: str) -> str:
+        await self.storage.makedirs(ctx.generation_dir)
 
         self.logger.debug("Downloading text")
 
-        page = self._get_page()
+        page = ctx.page
 
         await page.locator("//button[normalize-space(.)='Текст выступления']").click(
             timeout=self.generation_timeout
@@ -571,10 +569,10 @@ class SokraticSource(PresentationSource):
         if not text_content:
             raise RuntimeError("Failed to download text content")
 
-        key = self.storage.build_path(save_path, f"{file_stem}.txt")
+        key = self.storage.build_path(ctx.generation_dir, f"{file_stem}.txt")
         return await self.storage.save_text(key, text_content)
 
-    async def _close_popup_if_visible(self, page: Page, popup_locator, timeout: int = 5000) -> bool:
+    async def _close_popup_if_visible(self, ctx: _GenCtx, popup_locator, timeout: int = 5000) -> bool:
         try:
             await popup_locator.wait_for(state="visible", timeout=1000)
         except PlaywrightTimeoutError:
@@ -582,7 +580,7 @@ class SokraticSource(PresentationSource):
             return False
         try:
             self.logger.debug("Popup window detected, closing")
-            await page.locator(
+            await ctx.page.locator(
                 "//div[@role='dialog']//button[contains(@class, '-top-2')]"
             ).click()
             await popup_locator.wait_for(state="hidden", timeout=5000)
@@ -592,12 +590,12 @@ class SokraticSource(PresentationSource):
             return False
 
     async def _wait_for_blocking_preloader_to_disappear(
-        self, page: Page, timeout: int | None = None
+        self, ctx: _GenCtx, timeout: int | None = None
     ) -> None:
         wait_timeout = timeout or self.playwright_default_timeout or 10000
-        await self._log_preloader_state(page, f"before_wait timeout={wait_timeout}")
+        await self._log_preloader_state(ctx, f"before_wait timeout={wait_timeout}")
         try:
-            await page.wait_for_function(
+            await ctx.page.wait_for_function(
                 """() => {
                     const selectors = [
                         '[aria-busy="true"]',
@@ -633,16 +631,16 @@ class SokraticSource(PresentationSource):
                 }""",
                 timeout=wait_timeout,
             )
-            await self._log_preloader_state(page, "after_wait success")
+            await self._log_preloader_state(ctx, "after_wait success")
         except PlaywrightTimeoutError:
             self.logger.warning("Blocking preloader is still visible after %s ms", wait_timeout)
-            await self._log_preloader_state(page, "after_wait timeout")
+            await self._log_preloader_state(ctx, "after_wait timeout")
 
-    async def _download_presentation(self, doc_format: str, save_path: str, file_stem: str) -> str:
-        await self.storage.makedirs(save_path)
+    async def _download_presentation(self, ctx: _GenCtx, doc_format: str, file_stem: str) -> str:
+        await self.storage.makedirs(ctx.generation_dir)
 
         self.logger.debug("Check ref window")
-        page = self._get_page()
+        page = ctx.page
 
         popup_locator = page.locator(
             "//div[@role='dialog'][.//h2[normalize-space()='Пользователь']]"
@@ -663,31 +661,31 @@ class SokraticSource(PresentationSource):
 
         for attempt in range(1, max_attempts + 1):
             await self._log_download_diag(
-                page,
+                ctx,
                 f"{doc_format} attempt {attempt}/{max_attempts}: start url={page.url}",
             )
-            await self._wait_for_blocking_preloader_to_disappear(page, timeout=menu_timeout)
+            await self._wait_for_blocking_preloader_to_disappear(ctx, timeout=menu_timeout)
             await self._save_generation_screenshot(
-                page, save_path, 0, f"before_download_{doc_format}_attempt_{attempt}"
+                ctx, 0, f"before_download_{doc_format}_attempt_{attempt}"
             )
-            popup_closed = await self._close_popup_if_visible(page, popup_locator)
+            popup_closed = await self._close_popup_if_visible(ctx, popup_locator)
             if popup_closed:
                 self.logger.debug("Closed popup before clicking download button (attempt %s/%s)", attempt, max_attempts)
                 await self._log_download_diag(
-                    page, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed before download button click"
+                    ctx, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed before download button click"
                 )
                 await self._save_generation_screenshot(
-                    page, save_path, 0, f"popup_closed_before_download_{doc_format}_attempt_{attempt}"
+                    ctx, 0, f"popup_closed_before_download_{doc_format}_attempt_{attempt}"
                 )
             self.logger.debug(
                 "Click download button (attempt %s/%s)", attempt, max_attempts
             )
             await self._log_download_diag(
-                page, f"{doc_format} attempt {attempt}/{max_attempts}: before click download button"
+                ctx, f"{doc_format} attempt {attempt}/{max_attempts}: before click download button"
             )
-            await self._log_preloader_state(page, f"attempt {attempt} before_click_download_button")
+            await self._log_preloader_state(ctx, f"attempt {attempt} before_click_download_button")
             await self._save_generation_screenshot(
-                page, save_path, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
+                ctx, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
             )
             try:
                 await download_button.click(
@@ -697,7 +695,7 @@ class SokraticSource(PresentationSource):
             except PlaywrightTimeoutError as exc:
                 last_error = exc
                 await self._log_download_diag(
-                    page,
+                    ctx,
                     f"{doc_format} attempt {attempt}/{max_attempts}: download button click timeout",
                     flush=True,
                 )
@@ -709,36 +707,33 @@ class SokraticSource(PresentationSource):
                     page.url,
                 )
                 await self._save_generation_screenshot(
-                    page,
-                    save_path,
+                    ctx,
                     0,
                     f"download_button_click_timeout_{doc_format}_attempt_{attempt}",
                 )
                 continue
             await self._log_download_diag(
-                page, f"{doc_format} attempt {attempt}/{max_attempts}: after click download button"
+                ctx, f"{doc_format} attempt {attempt}/{max_attempts}: after click download button"
             )
-            await self._log_preloader_state(page, f"attempt {attempt} after_click_download_button")
+            await self._log_preloader_state(ctx, f"attempt {attempt} after_click_download_button")
             await self._save_generation_screenshot(
-                page, save_path, 0, f"after_click_download_{doc_format}_attempt_{attempt}"
+                ctx, 0, f"after_click_download_{doc_format}_attempt_{attempt}"
             )
 
-            popup_closed = await self._close_popup_if_visible(page, popup_locator)
+            popup_closed = await self._close_popup_if_visible(ctx, popup_locator)
             if popup_closed:
                 self.logger.debug("Re-open download menu after closing popup")
                 await self._log_download_diag(
-                    page, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed, reopening menu"
+                    ctx, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed, reopening menu"
                 )
                 await self._save_generation_screenshot(
-                    page,
-                    save_path,
+                    ctx,
                     0,
                     f"before_reopen_download_menu_{doc_format}_attempt_{attempt}",
                 )
                 await download_button.click(timeout=menu_timeout, force=True)
                 await self._save_generation_screenshot(
-                    page,
-                    save_path,
+                    ctx,
                     0,
                     f"after_reopen_download_menu_{doc_format}_attempt_{attempt}",
                 )
@@ -746,7 +741,7 @@ class SokraticSource(PresentationSource):
             await menu_locator.wait_for(state="visible", timeout=menu_timeout)
             await format_locator.wait_for(state="visible", timeout=menu_timeout)
             await self._save_generation_screenshot(
-                page, save_path, 0, f"menu_open_{doc_format}_attempt_{attempt}"
+                ctx, 0, f"menu_open_{doc_format}_attempt_{attempt}"
             )
 
             try:
@@ -758,13 +753,12 @@ class SokraticSource(PresentationSource):
                         max_attempts,
                     )
                     await self._log_download_diag(
-                        page,
+                        ctx,
                         f"{doc_format} attempt {attempt}/{max_attempts}: before click format",
                     )
-                    await self._log_preloader_state(page, f"attempt {attempt} before_click_format")
+                    await self._log_preloader_state(ctx, f"attempt {attempt} before_click_format")
                     await self._save_generation_screenshot(
-                        page,
-                        save_path,
+                        ctx,
                         0,
                         f"before_click_download_format_{doc_format}_attempt_{attempt}",
                     )
@@ -773,21 +767,15 @@ class SokraticSource(PresentationSource):
                     else:
                         await format_locator.click(no_wait_after=True)
                     await self._log_download_diag(
-                        page,
+                        ctx,
                         f"{doc_format} attempt {attempt}/{max_attempts}: after click format",
                     )
-                    await self._log_preloader_state(page, f"attempt {attempt} after_click_format")
-                    await self._save_generation_screenshot(
-                        page,
-                        save_path,
-                        0,
-                        f"after_click_download_format_{doc_format}_attempt_{attempt}",
-                    )
+                    await self._log_preloader_state(ctx, f"attempt {attempt} after_click_format")
                 break
             except PlaywrightTimeoutError as exc:
                 last_error = exc
                 await self._log_download_diag(
-                    page,
+                    ctx,
                     f"{doc_format} attempt {attempt}/{max_attempts}: expect_download timeout",
                     flush=True,
                 )
@@ -799,7 +787,7 @@ class SokraticSource(PresentationSource):
                     page.url,
                 )
                 await self._save_generation_screenshot(
-                    page, save_path, 0, f"download_timeout_{doc_format}_attempt_{attempt}"
+                    ctx, 0, f"download_timeout_{doc_format}_attempt_{attempt}"
                 )
 
         if download_info is None:
@@ -809,17 +797,17 @@ class SokraticSource(PresentationSource):
                 max_attempts,
             )
             await self._log_download_diag(
-                page, f"{doc_format}: failed after {max_attempts} attempts", flush=True
+                ctx, f"{doc_format}: failed after {max_attempts} attempts", flush=True
             )
             raise RuntimeError(
                 f"Download event not received for format '{doc_format}' after {max_attempts} attempts"
             ) from last_error
 
-        await self._close_popup_if_visible(page, popup_locator)
+        await self._close_popup_if_visible(ctx, popup_locator)
 
         download = await download_info.value
         ext = os.path.splitext(download.suggested_filename)[1]
-        dest_key = self.storage.build_path(save_path, f"{file_stem}{ext}")
+        dest_key = self.storage.build_path(ctx.generation_dir, f"{file_stem}{ext}")
 
         fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(fd)

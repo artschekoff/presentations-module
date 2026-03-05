@@ -5,7 +5,7 @@ import os
 
 from bson import ObjectId
 from dotenv import load_dotenv
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import async_playwright
 
 import uuid
 
@@ -37,14 +37,14 @@ tasks = [
         subject="Экология",
         author="Вася Пупкин",
     ),
-    # PresentationTask(
-    #     topic="Влияние климата на домашних животных",
-    #     language="kz",
-    #     slides_amount=30,
-    #     grade="5",
-    #     subject="Экология",       
-    #     author="Кривощеков Артем",
-    # ),
+    PresentationTask(
+        topic="Влияние климата на домашних животных",
+        language="kz",
+        slides_amount=30,
+        grade="5",
+        subject="Экология",       
+        author="Кривощеков Артем",
+    ),
     # PresentationTask(
     #     topic="Популяция китов",
     #     language="kz",
@@ -75,40 +75,29 @@ def _create_s3_storage() -> S3FileStorage:
     )
 
 
+def _create_source(apw) -> SokraticSource:
+    return SokraticSource(
+        apw,
+        logger=logger,
+        generation_dir=os.getenv("PRESENTATIONS_DIR", "./assets/presentations"),
+        generation_timeout=int(os.getenv("PRESENTATIONS_GENERATION_TIMEOUT_MS", "600000")),
+        playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
+        site_throttle_delay_ms=float(os.getenv("SITE_THROTTLE_DELAY_MS", "5000")),
+        save_screenshots=os.environ.get("SAVE_SCREENSHOTS", "true").lower() == "true",
+        save_logs=os.environ.get("SAVE_LOGS", "false").lower() == "true",
+        storage=_create_s3_storage(),
+    )
+
+
 async def run_presentation_task(
-    task_id: ObjectId, task: PresentationTask
+    task_id: ObjectId, task: PresentationTask, source: SokraticSource
 ) -> tuple[PresentationTask, list[str]]:
 
     db = MongoStorage()
     file_paths: list[str] = []
+    generation_id = uuid.uuid4().hex
 
     try:
-        apw = await async_playwright().start()
-        generation_id = uuid.uuid4().hex
-
-        source = SokraticSource(
-            apw,
-            logger=logger,
-            generation_dir=os.getenv("PRESENTATIONS_DIR", "./assets/presentations"),
-            generation_timeout=int(os.getenv("PRESENTATIONS_GENERATION_TIMEOUT_MS", "600000")),
-            playwright_default_timeout=int(os.environ["PLAYWRIGHT_DEFAULT_TIMEOUT_MS"]),
-            site_throttle_delay_ms=float(os.getenv("SITE_THROTTLE_DELAY_MS", "5000")),
-            save_screenshots=os.environ.get("SAVE_SCREENSHOTS", "true").lower() == "true",
-            save_logs=os.environ.get("SAVE_LOGS", "false").lower() == "true",
-            storage=_create_s3_storage(),
-        )
-
-        await source.init_async(
-            headless=os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
-        )
-
-        await source.authenticate(
-            login=os.environ["SOKRATIC_USERNAME"],
-            password=os.environ["SOKRATIC_PASSWORD"],
-            generation_id=generation_id,
-        )
-
-        file_paths: list[str] = []
         async for update in source.generate_presentation(
             generation_id=generation_id,
             topic=task.topic,
@@ -123,15 +112,11 @@ async def run_presentation_task(
                 file_paths = list(update.get("files", []))
 
         logger.info(f"Generated presentation for topic: {task.topic}")
-
         db.save_result(task_id, file_paths)
 
     except Exception as e:
         db.save_error(task_id, str(e))
         logger.error(f"Error processing task {task.topic}: {e}")
-    finally:
-        await source.dispose_async()
-        await apw.stop()
 
     return (task, file_paths)
 
@@ -162,25 +147,43 @@ def set_tasks() -> list[tuple[ObjectId, PresentationTask]]:
 
 
 async def main():
+    apw = await async_playwright().start()
+    source = _create_source(apw)
+
     try:
-        db_tasks = set_tasks()
-
-        semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-
-        async def bounded_run(task_id: ObjectId, task: PresentationTask):
-            async with semaphore:
-                return await run_presentation_task(task_id, task)
-
-        results = await asyncio.gather(
-            *(bounded_run(task_id, task) for task_id, task in db_tasks)
+        await source.init_async(
+            headless=os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
         )
 
-        for task, file_names in results:
-            logger.info(f"Presentation files for topic {task.topic}: {file_names}")
+        init_generation_id = uuid.uuid4().hex
+        await source.authenticate(
+            login=os.environ["SOKRATIC_USERNAME"],
+            password=os.environ["SOKRATIC_PASSWORD"],
+            generation_id=init_generation_id,
+        )
 
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        return
+        try:
+            db_tasks = set_tasks()
+
+            semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+
+            async def bounded_run(task_id: ObjectId, task: PresentationTask):
+                async with semaphore:
+                    return await run_presentation_task(task_id, task, source)
+
+            results = await asyncio.gather(
+                *(bounded_run(task_id, task) for task_id, task in db_tasks)
+            )
+
+            for task, file_names in results:
+                logger.info(f"Presentation files for topic {task.topic}: {file_names}")
+
+        except Exception as e:
+            logger.error(f"An error occurred: {e}")
+
+    finally:
+        await source.dispose_async()
+        await apw.stop()
 
 
 if __name__ == "__main__":
