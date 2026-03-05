@@ -576,7 +576,11 @@ class SokraticSource(PresentationSource):
 
     async def _close_popup_if_visible(self, page: Page, popup_locator, timeout: int = 5000) -> bool:
         try:
-            await popup_locator.wait_for(state="visible", timeout=timeout)
+            await popup_locator.wait_for(state="visible", timeout=1000)
+        except PlaywrightTimeoutError:
+            self.logger.info("Popup window not detected, continue")
+            return False
+        try:
             self.logger.debug("Popup window detected, closing")
             await page.locator(
                 "//div[@role='dialog']//button[contains(@class, '-top-2')]"
@@ -584,7 +588,7 @@ class SokraticSource(PresentationSource):
             await popup_locator.wait_for(state="hidden", timeout=5000)
             return True
         except PlaywrightTimeoutError:
-            self.logger.info("Popup window not detected, continue")
+            self.logger.warning("Popup window detected but failed to close")
             return False
 
     async def _wait_for_blocking_preloader_to_disappear(
