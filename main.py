@@ -40,19 +40,19 @@ tasks = [
     PresentationTask(
         topic="Влияние климата на домашних животных",
         language="kz",
-        slides_amount=30,
+        slides_amount=10,
         grade="5",
         subject="Экология",       
         author="Кривощеков Артем",
     ),
-    # PresentationTask(
-    #     topic="Популяция китов",
-    #     language="kz",
-    #     slides_amount=30,
-    #     grade="5",
-    #     subject="Биология",
-    #     author="Кривощеков Артем",
-    # ),
+    PresentationTask(
+        topic="Популяция китов",
+        language="kz",
+        slides_amount=10,
+        grade="5",
+        subject="Биология",
+        author="Кривощеков Артем",
+    ),
     # PresentationTask(
     #     topic="Проблемы концерна автоваз",
     #     language="kz",

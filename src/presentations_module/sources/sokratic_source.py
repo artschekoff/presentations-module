@@ -14,6 +14,7 @@ from playwright.async_api import (
     Page,
     Route,
     TimeoutError as PlaywrightTimeoutError,
+    expect,
 )
 
 from .download_format import DownloadFormat
@@ -419,7 +420,9 @@ class SokraticSource(PresentationSource):
             self.logger.debug("Specifying details for generation")
             details_prompt_filled = self.details_prompt.format(subject, grade)
             await ctx.page.locator('//form//textarea').type(details_prompt_filled)
-            await ctx.page.locator('//form//button[@type="submit"]').click()
+            submit_button = ctx.page.locator('//form//button[@type="submit"]')
+            await expect(submit_button).to_be_enabled(timeout=self.playwright_default_timeout)
+            await submit_button.click()
 
             pres_button = (
                 "//button[normalize-space(.)='Презентация']"
@@ -589,11 +592,29 @@ class SokraticSource(PresentationSource):
             self.logger.warning("Popup window detected but failed to close")
             return False
 
-    async def _wait_for_blocking_preloader_to_disappear(
-        self, ctx: _GenCtx, timeout: int | None = None
+    async def _wait_for_download_button_idle(
+        self, page: Page, locator, timeout: int | None = None
     ) -> None:
-        wait_timeout = timeout or self.playwright_default_timeout or 10000
-        await self._log_preloader_state(ctx, f"before_wait timeout={wait_timeout}")
+        """Wait until the download button's internal loader is hidden (opacity 0)."""
+        _timeout = timeout or self.playwright_default_timeout
+        try:
+            btn_handle = await locator.element_handle(timeout=_timeout)
+            if btn_handle is None:
+                return
+            await page.wait_for_function(
+                """(btn) => {
+                    const container = btn.querySelector('.loader-container');
+                    if (!container) return true;
+                    return window.getComputedStyle(container).opacity === '0';
+                }""",
+                arg=btn_handle,
+                timeout=_timeout,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass  # non-critical – proceed with click attempt
+
+    async def _wait_for_blocking_preloader_to_disappear(self, ctx: _GenCtx) -> None:
+        await self._log_preloader_state(ctx, f"before_wait timeout={self.playwright_default_timeout}")
         try:
             await ctx.page.wait_for_function(
                 """() => {
@@ -629,11 +650,11 @@ class SokraticSource(PresentationSource):
                     }
                     return true;
                 }""",
-                timeout=wait_timeout,
+                timeout=self.playwright_default_timeout,
             )
             await self._log_preloader_state(ctx, "after_wait success")
         except PlaywrightTimeoutError:
-            self.logger.warning("Blocking preloader is still visible after %s ms", wait_timeout)
+            self.logger.warning("Blocking preloader is still visible after %s ms", self.playwright_default_timeout)
             await self._log_preloader_state(ctx, "after_wait timeout")
 
     async def _download_presentation(self, ctx: _GenCtx, doc_format: str, file_stem: str) -> str:
@@ -646,7 +667,7 @@ class SokraticSource(PresentationSource):
             "//div[@role='dialog'][.//h2[normalize-space()='Пользователь']]"
         )
 
-        download_button = page.locator("//button[normalize-space(.)='Скачать']")
+        download_button = page.locator("//button[@aria-haspopup='menu'][normalize-space(.)='Скачать']")
         format_locator = page.locator(
             f"//div[@role='menuitem'][normalize-space(.)='{doc_format}']"
         )
@@ -654,17 +675,20 @@ class SokraticSource(PresentationSource):
             f"//div[@role='menu'][.//div[@role='menuitem'][normalize-space(.)='{doc_format}']]"
         )
 
+        self.logger.debug("Waiting for download button to become enabled")
+        await expect(download_button).to_be_enabled(timeout=self.generation_timeout)
+        self.logger.debug("Download button is enabled")
+
         max_attempts = 3
         last_error: Exception | None = None
         download_info = None
-        menu_timeout = self.playwright_default_timeout or 10000
 
         for attempt in range(1, max_attempts + 1):
             await self._log_download_diag(
                 ctx,
                 f"{doc_format} attempt {attempt}/{max_attempts}: start url={page.url}",
             )
-            await self._wait_for_blocking_preloader_to_disappear(ctx, timeout=menu_timeout)
+            await self._wait_for_blocking_preloader_to_disappear(ctx)
             await self._save_generation_screenshot(
                 ctx, 0, f"before_download_{doc_format}_attempt_{attempt}"
             )
@@ -684,12 +708,14 @@ class SokraticSource(PresentationSource):
                 ctx, f"{doc_format} attempt {attempt}/{max_attempts}: before click download button"
             )
             await self._log_preloader_state(ctx, f"attempt {attempt} before_click_download_button")
+            await self._wait_for_download_button_idle(page, download_button)
+            await download_button.scroll_into_view_if_needed(timeout=self.playwright_default_timeout)
             await self._save_generation_screenshot(
                 ctx, 0, f"before_click_download_{doc_format}_attempt_{attempt}"
             )
             try:
                 await download_button.click(
-                    timeout=menu_timeout,
+                    timeout=self.playwright_default_timeout,
                     force=True,
                 )
             except PlaywrightTimeoutError as exc:
@@ -720,26 +746,71 @@ class SokraticSource(PresentationSource):
                 ctx, 0, f"after_click_download_{doc_format}_attempt_{attempt}"
             )
 
-            popup_closed = await self._close_popup_if_visible(ctx, popup_locator)
-            if popup_closed:
-                self.logger.debug("Re-open download menu after closing popup")
-                await self._log_download_diag(
-                    ctx, f"{doc_format} attempt {attempt}/{max_attempts}: popup closed, reopening menu"
-                )
-                await self._save_generation_screenshot(
-                    ctx,
-                    0,
-                    f"before_reopen_download_menu_{doc_format}_attempt_{attempt}",
-                )
-                await download_button.click(timeout=menu_timeout, force=True)
-                await self._save_generation_screenshot(
-                    ctx,
-                    0,
-                    f"after_reopen_download_menu_{doc_format}_attempt_{attempt}",
-                )
+            # Inner retry loop: wait for the dropdown menu to appear.
+            # If it doesn't open (popup intervened or click didn't register) — re-click.
+            menu_open = False
+            menu_click_timeout_ms = 5000
+            max_menu_retries = 5
+            for menu_retry in range(1, max_menu_retries + 1):
+                popup_closed = await self._close_popup_if_visible(ctx, popup_locator)
+                if popup_closed:
+                    self.logger.debug(
+                        "Popup closed, re-clicking download button (attempt %s/%s, menu retry %s/%s)",
+                        attempt, max_attempts, menu_retry, max_menu_retries,
+                    )
+                    await self._log_download_diag(
+                        ctx,
+                        f"{doc_format} attempt {attempt}/{max_attempts} menu retry {menu_retry}: popup closed, re-clicking",
+                    )
+                    await self._save_generation_screenshot(
+                        ctx, 0, f"before_reopen_menu_{doc_format}_a{attempt}_r{menu_retry}"
+                    )
+                    await self._wait_for_download_button_idle(page, download_button)
+                    await download_button.scroll_into_view_if_needed(timeout=self.playwright_default_timeout)
+                    await download_button.click(timeout=self.playwright_default_timeout, force=True)
 
-            await menu_locator.wait_for(state="visible", timeout=menu_timeout)
-            await format_locator.wait_for(state="visible", timeout=menu_timeout)
+                try:
+                    await menu_locator.wait_for(state="visible", timeout=menu_click_timeout_ms)
+                    menu_open = True
+                    self.logger.debug(
+                        "Dropdown menu appeared (attempt %s/%s, menu retry %s/%s)",
+                        attempt, max_attempts, menu_retry, max_menu_retries,
+                    )
+                    await self._log_download_diag(
+                        ctx,
+                        f"{doc_format} attempt {attempt}/{max_attempts} menu retry {menu_retry}: menu visible",
+                    )
+                    break
+                except PlaywrightTimeoutError:
+                    self.logger.warning(
+                        "Dropdown menu did not appear after %s ms (attempt %s/%s, menu retry %s/%s), re-clicking",
+                        menu_click_timeout_ms, attempt, max_attempts, menu_retry, max_menu_retries,
+                    )
+                    await self._log_download_diag(
+                        ctx,
+                        f"{doc_format} attempt {attempt}/{max_attempts} menu retry {menu_retry}: menu timeout, re-clicking",
+                        flush=True,
+                    )
+                    await self._save_generation_screenshot(
+                        ctx, 0, f"menu_timeout_{doc_format}_a{attempt}_r{menu_retry}"
+                    )
+                    await self._wait_for_download_button_idle(page, download_button)
+                    await download_button.scroll_into_view_if_needed(timeout=self.playwright_default_timeout)
+                    await download_button.click(timeout=self.playwright_default_timeout, force=True)
+
+            if not menu_open:
+                self.logger.warning(
+                    "Dropdown menu never appeared after %s menu retries (attempt %s/%s), retrying outer attempt",
+                    max_menu_retries, attempt, max_attempts,
+                )
+                await self._log_download_diag(
+                    ctx,
+                    f"{doc_format} attempt {attempt}/{max_attempts}: menu never opened, going to next attempt",
+                    flush=True,
+                )
+                continue
+
+            await format_locator.wait_for(state="visible", timeout=self.playwright_default_timeout)
             await self._save_generation_screenshot(
                 ctx, 0, f"menu_open_{doc_format}_attempt_{attempt}"
             )
