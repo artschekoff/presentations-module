@@ -42,11 +42,11 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 
 TEST_TASK = PresentationTask(
-    topic="Влияние климата на экосистемы",
+    topic="Climate change and ecosystems",
     language="ru",
     slides_amount=10,
     grade="5",
-    subject="Экология",
+    subject="Ecology",
     author="Test User",
 )
 

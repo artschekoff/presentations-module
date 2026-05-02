@@ -30,36 +30,36 @@ MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "2"))
 
 tasks = [
     PresentationTask(
-        topic="Влияние климата на экосистемы",
+        topic="Climate change and ecosystems",
         language="ru",
         slides_amount=10,
         grade="5",
-        subject="Экология",
-        author="Вася Пупкин",
+        subject="Ecology",
+        author="John Doe",
     ),
     PresentationTask(
-        topic="Влияние климата на домашних животных",
+        topic="Climate change and household pets",
         language="kz",
         slides_amount=10,
         grade="5",
-        subject="Экология",       
-        author="Кривощеков Артем",
+        subject="Ecology",
+        author="Jane Smith",
     ),
     PresentationTask(
-        topic="Популяция китов",
+        topic="Whale populations",
         language="kz",
         slides_amount=10,
         grade="5",
-        subject="Биология",
-        author="Кривощеков Артем",
+        subject="Biology",
+        author="Jane Smith",
     ),
     # PresentationTask(
-    #     topic="Проблемы концерна автоваз",
+    #     topic="AVTOVAZ case study",
     #     language="kz",
     #     slides_amount=30,
     #     grade="5",
-    #     subject="Экономика",
-    #     author="Кривощеков Артем",
+    #     subject="Economics",
+    #     author="Jane Smith",
     # ),
 ]
 
