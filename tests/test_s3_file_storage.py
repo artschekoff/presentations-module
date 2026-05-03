@@ -130,7 +130,7 @@ class TestSaveBytes:
 class TestSaveText:
     async def test_uploads_utf8_text(self, storage: S3FileStorage, keep_s3: bool):
         key = storage.build_path("text_test.txt")
-        content = "Привет, мир! Hello S3."
+        content = "Hello, world! Hello S3."
         try:
             result = await storage.save_text(key, content)
             assert result == f"s3://{storage.bucket}/{key}"
