@@ -65,7 +65,7 @@ tasks = [
 
 def _create_s3_storage() -> S3FileStorage:
     return S3FileStorage(
-        bucket=os.environ["S3_BUCKET"],
+        bucket=os.getenv("S3_BUCKET", ""),
         prefix=os.getenv("S3_PREFIX", ""),
         region_name=os.getenv("S3_REGION"),
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
