@@ -317,26 +317,37 @@ class SokraticSource(PresentationSource):
                 '//button[contains(normalize-space(), "Создать с AI")]'
             ).click()
 
-            self.logger.debug("Wait for creation modal")
-            await ctx.page.locator(
-                '//h2[contains(normalize-space(), "Создать презентацию")]'
-            ).wait_for(timeout=self.playwright_default_timeout)
+            self.logger.debug("Wait for creation form")
+            await ctx.page.locator('//textarea[@name="topic"]').wait_for(
+                timeout=self.playwright_default_timeout
+            )
 
             self.logger.debug("Fill topic")
             await ctx.page.locator('//textarea[@name="topic"]').type(topic)
+            form_selects = ctx.page.locator("form select")
+            settings_button = ctx.page.locator(
+                "//form//button["
+                "contains(normalize-space(), 'Настройки') "
+                "or contains(normalize-space(), 'Дополнительные настройки') "
+                "or .//span[normalize-space()='Настройки']"
+                "]"
+            )
+            gallery_button = ctx.page.locator(
+                '//button[contains(normalize-space(), "Смотреть все дизайны")]'
+            )
+            form_variant = (
+                "legacy" if await gallery_button.count() else "redesign"
+            )
+            self.logger.debug("Detected form variant: %s", form_variant)
+
             self.logger.debug("Select slides amount: %s", slides_amount)
-            await ctx.page.locator(
-                '//form//select[.//option[contains(normalize-space(), "20")]]'
-            ).select_option(str(slides_amount))
+            await form_selects.nth(0).select_option(str(slides_amount))
 
             self.logger.debug("Select language: %s", language)
+            await form_selects.nth(1).select_option(str(language))
 
-            await ctx.page.locator("(//form//select)[2]").select_option(str(language))
-
-            self.logger.debug("Open advanced settings")
-            await ctx.page.locator(
-                '//form//button[contains(normalize-space(), "Дополнительные настройки")]'
-            ).click()
+            self.logger.debug("Open settings")
+            await settings_button.click()
 
             self.logger.debug("Open audience selector")
             await ctx.page.locator(
@@ -365,24 +376,39 @@ class SokraticSource(PresentationSource):
                 files.append(path)
             yield report_progress("form_saved", files=list(files))
 
-            self.logger.debug("Open design gallery")
-            await ctx.page.locator(
-                '//button[contains(normalize-space(), "Смотреть все дизайны")]'
-            ).click()
+            if form_variant == "legacy":
+                self.logger.debug("Open design gallery")
+                await gallery_button.click()
+                styles_locator = ctx.page.locator(
+                    "//div[@role='dialog']//div["
+                    "contains(@class, 'group/item') and contains(@class, 'cursor-pointer')"
+                    " and not(ancestor::div[contains(@class, 'group/item')])"
+                    "]"
+                )
+            else:
+                styles_locator = ctx.page.locator(
+                    "//form//div["
+                    "contains(@class, 'group/item') and contains(@class, 'cursor-pointer')"
+                    " and not(ancestor::div[contains(@class, 'group/item')])"
+                    "]"
+                )
 
-            styles_selector = (
-                "//div[@role='dialog']//h2[normalize-space()='Дизайны']"
-                "//..//..//div[contains(@class, 'group/item')]"
-            )
+            await styles_locator.first.wait_for(state="visible", timeout=self.playwright_default_timeout)
+            styles_count = await styles_locator.count()
 
-            styles_count = await ctx.page.locator(styles_selector).count()
-            self.logger.debug("Found %s styles", styles_count)
+            visible_indices: list[int] = []
+            for _i in range(styles_count):
+                _box = await styles_locator.nth(_i).bounding_box()
+                if _box is not None and _box.get("width", 0) > 0:
+                    visible_indices.append(_i)
 
-            if styles_count <= 0:
-                raise RuntimeError("No styles found in design gallery")
+            if not visible_indices:
+                raise RuntimeError("No visible styles found in design gallery")
+
+            self.logger.debug("Found %d visible styles", len(visible_indices))
 
             if style_id is None:
-                final_style_id = random.randint(0, styles_count - 1)
+                final_style_id = random.choice(visible_indices)
             else:
                 try:
                     final_style_id = int(style_id)
@@ -395,7 +421,13 @@ class SokraticSource(PresentationSource):
                     )
 
             self.logger.debug("Select style: %s", final_style_id)
-            await ctx.page.locator(styles_selector).nth(int(final_style_id)).click()
+            target_style = styles_locator.nth(int(final_style_id))
+            await target_style.scroll_into_view_if_needed()
+            if form_variant == "legacy":
+                await target_style.hover()
+                await target_style.locator("button:has-text('Выбрать')").click()
+            else:
+                await target_style.click()
 
             if path := await self._save_generation_screenshot(
                 ctx, steps.index("style_selected"), "style_selected"
@@ -404,9 +436,7 @@ class SokraticSource(PresentationSource):
             yield report_progress("style_selected", files=list(files))
 
             self.logger.debug("Start generation")
-            await ctx.page.locator(
-                '//form//button[contains(normalize-space(), "Создать с AI")]'
-            ).click()
+            await ctx.page.locator("form button[type='submit']:visible").click()
 
             if path := await self._save_generation_screenshot(
                 ctx, steps.index("generation_started"), "generation_started"
